@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "578974570970",
+    "project_id": "slidebeautifier",
+    "storage_bucket": "slidebeautifier.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:578974570970:android:a073b9f722e5f3971588e3",
+        "android_client_info": {
+          "package_name": "com.example.sildebeautifier"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwzKrq7YetM7TO332_5O2X5zUvOLN2Ack"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
