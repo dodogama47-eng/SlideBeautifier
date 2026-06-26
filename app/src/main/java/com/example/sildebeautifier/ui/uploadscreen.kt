@@ -1,4 +1,4 @@
-package com.example.sildebeautifier.ui.theme
+package com.example.sildebeautifier.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,9 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun HomeScreen(
-    onStartClick: () -> Unit
-) {
+fun UploadScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -22,18 +20,27 @@ fun HomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text(text = "Slide Beautifier")
-
-        Text(
-            text = "Make your slides cleaner and more professional.",
-            modifier = Modifier.padding(top = 16.dp)
-        )
+        Text(text = "Upload Slides")
 
         Button(
-            onClick = onStartClick,
+            onClick = { },
             modifier = Modifier.padding(top = 24.dp)
         ) {
-            Text(text = "Start Beautifying")
+            Text(text = "Choose Original PPTX")
+        }
+
+        Button(
+            onClick = { },
+            modifier = Modifier.padding(top = 16.dp)
+        ) {
+            Text(text = "Choose Style PPTX")
+        }
+
+        Button(
+            onClick = { },
+            modifier = Modifier.padding(top = 32.dp)
+        ) {
+            Text(text = "Beautify")
         }
     }
 }
