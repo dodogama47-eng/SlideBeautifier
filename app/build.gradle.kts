@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.sildebeautifier"
+    namespace = "com.example.slidebeautifier"
     compileSdk {
         version = release(37)
     }

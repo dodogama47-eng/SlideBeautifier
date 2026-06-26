@@ -1,4 +1,4 @@
-package com.example.sildebeautifier.ui
+package com.example.slidebeautifier.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

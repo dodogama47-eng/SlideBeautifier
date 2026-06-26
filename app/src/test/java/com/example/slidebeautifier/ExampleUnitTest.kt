@@ -1,4 +1,4 @@
-package com.example.sildebeautifier
+package com.example.slidebeautifier
 
 import org.junit.Test
 

@@ -1,4 +1,4 @@
-package com.example.sildebeautifier
+package com.example.slidebeautifier
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -8,9 +8,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import com.example.sildebeautifier.ui.HomeScreen
-import com.example.sildebeautifier.ui.UploadScreen
-import com.example.sildebeautifier.ui.theme.SildeBeautifierTheme
+import com.example.slidebeautifier.ui.HomeScreen
+import com.example.slidebeautifier.ui.UploadScreen
+import com.example.slidebeautifier.ui.theme.SlideBeautifierTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,21 +36,5 @@ fun SlideBeautifierApp() {
         )
 
         "upload" -> UploadScreen()
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    SildeBeautifierTheme {
-        Greeting("Android")
     }
 }
