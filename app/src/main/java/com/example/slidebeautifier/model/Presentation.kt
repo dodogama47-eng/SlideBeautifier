@@ -1,4 +1,4 @@
-package com.example.sildebeautifier.model
+package com.example.slidebeautifier.model
 
 data class Presentation(
     val id: String = "",
