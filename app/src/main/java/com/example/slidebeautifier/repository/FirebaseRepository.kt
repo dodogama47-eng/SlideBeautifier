@@ -1,7 +1,7 @@
-package com.example.sildebeautifier.repository
+package com.example.slidebeautifier.repository
 
-import com.example.sildebeautifier.model.Presentation
-import com.example.sildebeautifier.model.Template
+import com.example.slidebeautifier.model.Presentation
+import com.example.slidebeautifier.model.Template
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 

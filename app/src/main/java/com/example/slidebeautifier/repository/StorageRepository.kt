@@ -1,4 +1,4 @@
-package com.example.sildebeautifier.repository
+package com.example.slidebeautifier.repository
 
 import android.net.Uri
 import com.google.firebase.storage.FirebaseStorage
