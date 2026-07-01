@@ -15,7 +15,6 @@ import com.example.slidebeautifier.ui.theme.SlideBeautifierTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
             SlideBeautifierTheme {
                 SlideBeautifierApp()
