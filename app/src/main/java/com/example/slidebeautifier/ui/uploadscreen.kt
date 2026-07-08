@@ -19,9 +19,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+<<<<<<< Updated upstream
 import com.example.slidebeautifier.repository.BackendRepository
 import kotlinx.coroutines.launch
 
+=======
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import com.example.slidebeautifier.repository.BeautifyRepository
+import kotlinx.coroutines.launch
+>>>>>>> Stashed changes
 @Composable
 fun UploadScreen() {
     val context = LocalContext.current
@@ -43,7 +50,11 @@ fun UploadScreen() {
     ) { uri ->
         styleFileUri = uri
     }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val repository = remember { BeautifyRepository() }
 
+    var uploadStatus by remember { mutableStateOf("Not uploaded yet") }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -87,6 +98,7 @@ fun UploadScreen() {
 
         Button(
             onClick = {
+<<<<<<< Updated upstream
                 val contentUri = originalFileUri
                 val formatUri = styleFileUri
 
@@ -104,6 +116,25 @@ fun UploadScreen() {
                                 "Completed\nTask ID: ${response.task_id}\nDownload: ${response.download_url}"
                         } catch (e: Exception) {
                             statusText = "Failed: ${e.message}"
+=======
+                val original = originalFileUri
+                val style = styleFileUri
+
+                if (original != null && style != null) {
+                    coroutineScope.launch {
+                        try {
+                            uploadStatus = "Uploading..."
+
+                            val response = repository.uploadSlides(
+                                context = context,
+                                originalUri = original,
+                                styleUri = style
+                            )
+
+                            uploadStatus = "Upload success. Task ID: ${response.taskId}"
+                        } catch (e: Exception) {
+                            uploadStatus = "Upload failed: ${e.message}"
+>>>>>>> Stashed changes
                         }
                     }
                 }
@@ -113,10 +144,18 @@ fun UploadScreen() {
         ) {
             Text(text = "Beautify")
         }
+<<<<<<< Updated upstream
 
         Text(
             text = statusText,
             modifier = Modifier.padding(top = 24.dp)
         )
+=======
+        Text(
+                text = uploadStatus,
+        modifier = Modifier.padding(top = 16.dp)
+        )
+
+>>>>>>> Stashed changes
     }
 }
