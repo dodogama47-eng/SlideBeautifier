@@ -77,6 +77,7 @@ fun HomeScreen(
                 text = "Start Beautifying",
                 onClick = onStartClick
             )
+
         }
     }
 }
