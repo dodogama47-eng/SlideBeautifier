@@ -52,7 +52,20 @@ fun UploadScreen() {
         verticalArrangement = Arrangement.Center
     ) {
         Text(text = "Upload Slides")
-
+        Button(
+            onClick = {
+                scope.launch {
+                    try {
+                        val result = com.example.slidebeautifier.network.BackendClient.service.healthCheck()
+                        statusText = "Backend OK: ${result["message"]}"
+                    } catch (e: Exception) {
+                        statusText = "Backend test failed: ${e.message}"
+                    }
+                }
+            }
+        ) {
+            Text("Test Backend")
+        }
         Button(
             onClick = {
                 originalFilePicker.launch(
