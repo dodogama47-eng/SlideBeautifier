@@ -216,8 +216,13 @@ fun UploadScreen() {
                                         textUri = contentUri
                                     )
 
+                                    val savedFileName = backendRepository.downloadResult(
+                                        downloadUrl = response.download_url,
+                                        taskId = response.task_id
+                                    )
+
                                     statusText =
-                                        "Completed\nTask ID: ${response.task_id}\nDownload: ${response.download_url}"
+                                        "Completed\nSaved to Downloads/$savedFileName"
                                 } catch (e: Exception) {
                                     statusText = "Failed: ${e.message}"
                                 }
@@ -284,39 +289,6 @@ fun FileUploadCard(
             lineHeight = 18.sp
         )
 
-        Button(
-            onClick = {
-                val contentUri = originalFileUri
-                val formatUri = styleFileUri
-
-                if (contentUri != null && formatUri != null) {
-                    scope.launch {
-                        try {
-                            statusText = "Uploading and generating..."
-
-                            val response = backendRepository.uploadFiles(
-                                formatUri = formatUri,
-                                textUri = contentUri
-                            )
-
-                            val savedFileName = backendRepository.downloadResult(
-                                downloadUrl = response.download_url,
-                                taskId = response.task_id
-                            )
-
-                            statusText =
-                                "Completed\nSaved to Downloads/$savedFileName"
-                        } catch (e: Exception) {
-                            statusText = "Failed: ${e.message}"
-                        }
-                    }
-                }
-            },
-            enabled = originalFileUri != null && styleFileUri != null,
-            modifier = Modifier.padding(top = 32.dp)
-        ) {
-            Text(text = "Beautify")
-        }
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(

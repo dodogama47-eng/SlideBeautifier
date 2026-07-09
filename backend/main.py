@@ -1,4 +1,8 @@
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
+
+import os	
 from uuid import uuid4
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -26,11 +30,11 @@ openai_service = OpenAIService()
 ppt_writer = PptWriter()
 
 
-@app.get("/")
+@app.get("/api/health")
 def health_check():
     return {
-        "status": "running",
-        "message": "SlideBeautifier backend is running"
+        "status": "ok",
+        "message": "connected"
     }
 
 
