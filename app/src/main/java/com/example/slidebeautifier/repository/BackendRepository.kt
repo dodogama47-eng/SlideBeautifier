@@ -1,17 +1,16 @@
 package com.example.slidebeautifier.repository
 
-import android.content.ContentValues
+import com.example.slidebeautifier.data.Constants
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
-import android.provider.MediaStore
-import com.example.slidebeautifier.data.Constants
 import com.example.slidebeautifier.network.BackendClient
-import com.example.slidebeautifier.network.GenerateResponse
+import com.example.slidebeautifier.model.GenerateResponse
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
-
+import android.content.ContentValues
+import android.provider.MediaStore
 class BackendRepository(
     private val context: Context
 ) {
@@ -46,19 +45,22 @@ class BackendRepository(
         }
 
         val responseBody = BackendClient.service.downloadFile(fullUrl)
+
         val fileName = "SlideBeautifier_$taskId.pptx"
 
         val resolver = context.contentResolver
 
-        val contentValues = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(
-                MediaStore.Downloads.MIME_TYPE,
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            )
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-        }
+        val contentValues = ContentValues()
 
+        contentValues.put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+        contentValues.put(
+            MediaStore.Downloads.MIME_TYPE,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        contentValues.put(
+            MediaStore.Downloads.RELATIVE_PATH,
+            Environment.DIRECTORY_DOWNLOADS
+        )
         val uri = resolver.insert(
             MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             contentValues
@@ -78,12 +80,28 @@ class BackendRepository(
         partName: String,
         fileName: String
     ): MultipartBody.Part {
-        val bytes = context.contentResolver.openInputStream(uri)?.use {
-            it.readBytes()
-        } ?: ByteArray(0)
+        val contentResolver = context.contentResolver
+
+        val mimeType = contentResolver.getType(uri)
+            ?: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+        val bytes = contentResolver.openInputStream(uri)?.use { inputStream ->
+            inputStream.readBytes()
+        } ?: throw IllegalArgumentException("Cannot open selected file")
+
+        if (bytes.isEmpty()) {
+            throw IllegalArgumentException("Selected file is empty or unreadable")
+        }
+
+        android.util.Log.d(
+            "UploadDebug",
+            "$partName size = ${bytes.size}, mimeType = $mimeType"
+        )
 
         val requestBody = bytes.toRequestBody(
-            "application/octet-stream".toMediaTypeOrNull()
+            mimeType.toMediaTypeOrNull(),
+            0,
+            bytes.size
         )
 
         return MultipartBody.Part.createFormData(
@@ -92,4 +110,4 @@ class BackendRepository(
             requestBody
         )
     }
-}
+    }
