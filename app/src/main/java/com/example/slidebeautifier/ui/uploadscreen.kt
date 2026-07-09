@@ -113,8 +113,13 @@ fun UploadScreen() {
                                 textUri = contentUri
                             )
 
+                            val savedFileName = backendRepository.downloadResult(
+                                downloadUrl = response.download_url,
+                                taskId = response.task_id
+                            )
+
                             statusText =
-                                "Completed\nTask ID: ${response.task_id}\nDownload: ${response.download_url}"
+                                "Completed\nSaved to Downloads/$savedFileName"
                         } catch (e: Exception) {
                             statusText = "Failed: ${e.message}"
                         }
