@@ -1,161 +1,133 @@
-import os
-import uuid
-import shutil
-import asyncio
-from typing import Optional, List, Dict
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 
+from services.file_service import FileService
+from services.task_service import TaskService
+from services.ppt_reader import PptReader
+from services.openai_service import OpenAIService
+from services.ppt_writer import PptWriter
 
-app = FastAPI()
+app = FastAPI(title="SlideBeautifier Backend")
 
-UPLOAD_DIR = "uploads"
-RESULT_DIR = "results"
+BASE_DIR = Path(__file__).parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+RESULT_DIR = BASE_DIR / "results"
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RESULT_DIR, exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True)
+RESULT_DIR.mkdir(exist_ok=True)
 
-
-class TaskStatus(BaseModel):
-    taskId: str
-    status: str
-    progress: int
-    previewImages: List[str]
-    downloadUrl: Optional[str]
-    message: Optional[str]
-
-
-tasks: Dict[str, dict] = {}
+file_service = FileService(UPLOAD_DIR)
+task_service = TaskService()
+ppt_reader = PptReader()
+openai_service = OpenAIService()
+ppt_writer = PptWriter()
 
 
-app.mount("/results", StaticFiles(directory=RESULT_DIR), name="results")
-
-
-@app.get("/api/health")
+@app.get("/")
 def health_check():
     return {
-        "status": "ok"
+        "status": "running",
+        "message": "SlideBeautifier backend is running"
     }
 
 
-@app.post("/api/beautify")
-async def beautify_slides(
-    background_tasks: BackgroundTasks,
-    original_file: UploadFile = File(...),
-    style_file: UploadFile = File(...)
+@app.post("/generate")
+async def generate_presentation(
+        format_file: UploadFile = File(...),
+        text_file: UploadFile = File(...)
 ):
-    if not original_file.filename.lower().endswith(".pptx"):
-        raise HTTPException(
-            status_code=400,
-            detail="original_file must be .pptx"
-        )
+    task_id = str(uuid4())
 
-    if not style_file.filename.lower().endswith(".pptx"):
-        raise HTTPException(
-            status_code=400,
-            detail="style_file must be .pptx"
-        )
+    if not format_file.filename.endswith(".pptx"):
+        raise HTTPException(status_code=400, detail="format_file must be .pptx")
 
-    task_id = str(uuid.uuid4())
+    if not text_file.filename.endswith(".pptx"):
+        raise HTTPException(status_code=400, detail="text_file must be .pptx")
 
-    upload_task_dir = os.path.join(UPLOAD_DIR, task_id)
-    result_task_dir = os.path.join(RESULT_DIR, task_id)
+    format_path = file_service.save_upload_file(format_file, task_id, "format")
+    text_path = file_service.save_upload_file(text_file, task_id, "text")
 
-    os.makedirs(upload_task_dir, exist_ok=True)
-    os.makedirs(result_task_dir, exist_ok=True)
+    extracted_text = ppt_reader.extract_all_text(text_path)
 
-    original_path = os.path.join(upload_task_dir, "original.pptx")
-    style_path = os.path.join(upload_task_dir, "style.pptx")
+    if not extracted_text.strip():
+        raise HTTPException(status_code=400, detail="No text found in text_file")
 
-    with open(original_path, "wb") as buffer:
-        shutil.copyfileobj(original_file.file, buffer)
+    slide_plan = openai_service.generate_slide_plan(extracted_text)
 
-    with open(style_path, "wb") as buffer:
-        shutil.copyfileobj(style_file.file, buffer)
+    result_path = RESULT_DIR / f"{task_id}_result.pptx"
 
-    tasks[task_id] = {
-        "taskId": task_id,
-        "status": "processing",
-        "progress": 0,
-        "previewImages": [],
-        "downloadFile": None,
-        "message": None
-    }
-
-    background_tasks.add_task(
-        process_task,
-        task_id,
-        original_path,
-        style_path,
-        result_task_dir
+    ppt_writer.write_slide_plan_to_template(
+        template_path=format_path,
+        slide_plan=slide_plan,
+        result_path=result_path
     )
 
+    task = task_service.create_task(
+        task_id=task_id,
+        format_path=str(format_path),
+        text_path=str(text_path)
+    )
+
+    task["status"] = "completed"
+    task["result_path"] = str(result_path)
+
     return {
-        "taskId": task_id,
-        "status": "processing"
+        "task_id": task_id,
+        "status": "completed",
+        "download_url": f"/download/{task_id}"
     }
 
 
-@app.get("/api/tasks/{task_id}")
-def get_task_status(task_id: str, request: Request):
-    if task_id not in tasks:
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found"
-        )
+@app.get("/download/{task_id}")
+def download_result(task_id: str):
+    task = task_service.get_task(task_id)
 
-    task = tasks[task_id]
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    base_url = str(request.base_url).rstrip("/")
+    result_path = Path(task["result_path"])
 
-    download_url = None
-    if task["downloadFile"] is not None:
-        download_url = f"{base_url}/results/{task_id}/result.pptx"
+    if not result_path.exists():
+        raise HTTPException(status_code=404, detail="Result file not found")
 
-    preview_images = [
-        f"{base_url}/results/{task_id}/{image_name}"
-        for image_name in task["previewImages"]
-    ]
-
-    return {
-        "taskId": task["taskId"],
-        "status": task["status"],
-        "progress": task["progress"],
-        "previewImages": preview_images,
-        "downloadUrl": download_url,
-        "message": task["message"]
-    }
+    return FileResponse(
+        path=result_path,
+        filename="result.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
 
 
-async def process_task(
-    task_id: str,
-    original_path: str,
-    style_path: str,
-    result_task_dir: str
-):
-    try:
-        tasks[task_id]["progress"] = 20
-        await asyncio.sleep(1)
+@app.get("/tasks/{task_id}")
+def get_task(task_id: str):
+    task = task_service.get_task(task_id)
 
-        tasks[task_id]["progress"] = 50
-        await asyncio.sleep(1)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-        tasks[task_id]["progress"] = 80
-        await asyncio.sleep(1)
+    return task
 
-        # 第一版先不真正美化 PPT
-        # 先把 original.pptx 复制成 result.pptx
-        result_path = os.path.join(result_task_dir, "result.pptx")
-        shutil.copyfile(original_path, result_path)
+@app.get("/download/{task_id}")
+def download_result(task_id: str):
+    task = task_service.get_task(task_id)
 
-        tasks[task_id]["status"] = "completed"
-        tasks[task_id]["progress"] = 100
-        tasks[task_id]["downloadFile"] = "result.pptx"
-        tasks[task_id]["previewImages"] = []
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    except Exception as e:
-        tasks[task_id]["status"] = "failed"
-        tasks[task_id]["progress"] = 0
-        tasks[task_id]["message"] = str(e)
+    result_path = task.get("result_path")
+
+    if not result_path:
+        raise HTTPException(status_code=404, detail="Result file not ready")
+
+    result_file = Path(result_path)
+
+    if not result_file.exists():
+        raise HTTPException(status_code=404, detail="Result file not found")
+
+    return FileResponse(
+        path=result_file,
+        filename="result.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )

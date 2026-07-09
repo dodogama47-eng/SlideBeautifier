@@ -1,7 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    id("com.google.gms.google-services")
 }
 
 android {
@@ -11,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.sildebeautifier"
+        applicationId = "com.example.slidebeautifier"
         minSdk = 37
         targetSdk = 37
         versionCode = 1
@@ -19,11 +18,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField(
-            "String",
-            "OPENAI_API_KEY",
-            "\"${project.findProperty("OPENAI_API_KEY") ?: ""}\""
-        )
     }
     buildFeatures {
         buildConfig = true

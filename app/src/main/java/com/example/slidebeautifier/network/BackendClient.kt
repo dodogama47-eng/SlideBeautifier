@@ -6,7 +6,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
-object OpenAIClient {
+object BackendClient {
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY
@@ -16,12 +16,12 @@ object OpenAIClient {
         .addInterceptor(loggingInterceptor)
         .build()
 
-    val service: OpenAIService by lazy {
+    val service: BackendService by lazy {
         Retrofit.Builder()
-            .baseUrl(Constants.OPENAI_BASE_URL)
+            .baseUrl(Constants.BACKEND_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
-            .create(OpenAIService::class.java)
+            .create(BackendService::class.java)
     }
 }

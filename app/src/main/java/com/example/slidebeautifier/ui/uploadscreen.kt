@@ -13,15 +13,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.slidebeautifier.repository.BackendRepository
+import kotlinx.coroutines.launch
 
 @Composable
 fun UploadScreen() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val backendRepository = remember { BackendRepository(context) }
+
     var originalFileUri by remember { mutableStateOf<Uri?>(null) }
     var styleFileUri by remember { mutableStateOf<Uri?>(null) }
+    var statusText by remember { mutableStateOf("Waiting for files") }
 
     val originalFilePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -43,51 +52,89 @@ fun UploadScreen() {
         verticalArrangement = Arrangement.Center
     ) {
         Text(text = "Upload Slides")
-
+        Button(
+            onClick = {
+                scope.launch {
+                    try {
+                        val result = com.example.slidebeautifier.network.BackendClient.service.healthCheck()
+                        statusText = "Backend OK: ${result["message"]}"
+                    } catch (e: Exception) {
+                        statusText = "Backend test failed: ${e.message}"
+                    }
+                }
+            }
+        ) {
+            Text("Test Backend")
+        }
         Button(
             onClick = {
                 originalFilePicker.launch(
-                    arrayOf(
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
+                    arrayOf("application/vnd.openxmlformats-officedocument.presentationml.presentation")
                 )
             },
             modifier = Modifier.padding(top = 24.dp)
         ) {
-            Text(text = "Choose Original PPTX")
+            Text(text = "Choose Content PPTX")
         }
 
         Text(
-            text = originalFileUri?.lastPathSegment ?: "No original file selected",
+            text = originalFileUri?.lastPathSegment ?: "No content file selected",
             modifier = Modifier.padding(top = 8.dp)
         )
 
         Button(
             onClick = {
                 styleFilePicker.launch(
-                    arrayOf(
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
+                    arrayOf("application/vnd.openxmlformats-officedocument.presentationml.presentation")
                 )
             },
             modifier = Modifier.padding(top = 24.dp)
         ) {
-            Text(text = "Choose Style PPTX")
+            Text(text = "Choose Format PPTX")
         }
 
         Text(
-            text = styleFileUri?.lastPathSegment ?: "No style file selected",
+            text = styleFileUri?.lastPathSegment ?: "No format file selected",
             modifier = Modifier.padding(top = 8.dp)
         )
 
         Button(
             onClick = {
-                //API
+                val contentUri = originalFileUri
+                val formatUri = styleFileUri
+
+                if (contentUri != null && formatUri != null) {
+                    scope.launch {
+                        try {
+                            statusText = "Uploading and generating..."
+
+                            val response = backendRepository.uploadFiles(
+                                formatUri = formatUri,
+                                textUri = contentUri
+                            )
+
+                            val savedFileName = backendRepository.downloadResult(
+                                downloadUrl = response.download_url,
+                                taskId = response.task_id
+                            )
+
+                            statusText =
+                                "Completed\nSaved to Downloads/$savedFileName"
+                        } catch (e: Exception) {
+                            statusText = "Failed: ${e.message}"
+                        }
+                    }
+                }
             },
             enabled = originalFileUri != null && styleFileUri != null,
             modifier = Modifier.padding(top = 32.dp)
         ) {
             Text(text = "Beautify")
         }
+
+        Text(
+            text = statusText,
+            modifier = Modifier.padding(top = 24.dp)
+        )
     }
 }
