@@ -1,5 +1,6 @@
 package com.example.slidebeautifier.network
-
+import retrofit2.http.Streaming
+import com.example.slidebeautifier.model.GenerateResponse
 import okhttp3.MultipartBody
 import okhttp3.ResponseBody
 import retrofit2.http.GET
@@ -10,7 +11,7 @@ import retrofit2.http.Url
 
 interface BackendService {
 
-    @GET("/")
+    @GET("api/health")
     suspend fun healthCheck(): Map<String, String>
 
     @Multipart
@@ -19,7 +20,7 @@ interface BackendService {
         @Part formatFile: MultipartBody.Part,
         @Part textFile: MultipartBody.Part
     ): GenerateResponse
-
+    @Streaming
     @GET
     suspend fun downloadFile(
         @Url fileUrl: String

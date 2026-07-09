@@ -1,5 +1,8 @@
 package com.example.slidebeautifier.ui
+
+import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -40,13 +43,20 @@ fun UploadScreen() {
 
     var originalFileUri by remember { mutableStateOf<Uri?>(null) }
     var styleFileUri by remember { mutableStateOf<Uri?>(null) }
+
+    var originalFileName by remember { mutableStateOf("No content file selected") }
+    var styleFileName by remember { mutableStateOf("No format file selected") }
+
     var statusText by remember { mutableStateOf("Waiting for files") }
+    var isGenerating by remember { mutableStateOf(false) }
 
     val originalFilePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         originalFileUri = uri
+
         if (uri != null) {
+            originalFileName = getFileNameFromUri(context, uri) ?: "Selected content file"
             statusText = "Content file selected"
         }
     }
@@ -55,7 +65,9 @@ fun UploadScreen() {
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         styleFileUri = uri
+
         if (uri != null) {
+            styleFileName = getFileNameFromUri(context, uri) ?: "Selected format file"
             statusText = "Format file selected"
         }
     }
@@ -64,6 +76,7 @@ fun UploadScreen() {
         statusText.startsWith("Failed") -> Color(0xFFB42318)
         statusText.startsWith("Completed") -> Color(0xFF027A48)
         statusText.contains("OK") -> Color(0xFF175CD3)
+        statusText.contains("Uploading") -> Color(0xFF175CD3)
         else -> Color(0xFF5F6675)
     }
 
@@ -144,7 +157,7 @@ fun UploadScreen() {
                     .align(Alignment.CenterHorizontally),
                 title = "Content PPTX",
                 description = "The original slide deck that contains your real content.",
-                fileName = originalFileUri?.lastPathSegment ?: "No content file selected",
+                fileName = originalFileName,
                 buttonText = "Choose Content PPTX",
                 onClick = {
                     originalFilePicker.launch(
@@ -163,7 +176,7 @@ fun UploadScreen() {
                     .align(Alignment.CenterHorizontally),
                 title = "Format PPTX",
                 description = "The reference presentation used as the visual style.",
-                fileName = styleFileUri?.lastPathSegment ?: "No format file selected",
+                fileName = styleFileName,
                 buttonText = "Choose Format PPTX",
                 onClick = {
                     styleFilePicker.launch(
@@ -200,8 +213,8 @@ fun UploadScreen() {
                 Spacer(modifier = Modifier.height(18.dp))
 
                 GlassButton(
-                    text = "Beautify Slides",
-                    enabled = originalFileUri != null && styleFileUri != null,
+                    text = if (isGenerating) "Generating..." else "Beautify Slides",
+                    enabled = originalFileUri != null && styleFileUri != null && !isGenerating,
                     onClick = {
                         val contentUri = originalFileUri
                         val formatUri = styleFileUri
@@ -209,6 +222,7 @@ fun UploadScreen() {
                         if (contentUri != null && formatUri != null) {
                             scope.launch {
                                 try {
+                                    isGenerating = true
                                     statusText = "Uploading and generating..."
 
                                     val response = backendRepository.uploadFiles(
@@ -225,6 +239,8 @@ fun UploadScreen() {
                                         "Completed\nSaved to Downloads/$savedFileName"
                                 } catch (e: Exception) {
                                     statusText = "Failed: ${e.message}"
+                                } finally {
+                                    isGenerating = false
                                 }
                             }
                         }
@@ -306,4 +322,27 @@ fun FileUploadCard(
             onClick = onClick
         )
     }
+}
+
+private fun getFileNameFromUri(
+    context: Context,
+    uri: Uri
+): String? {
+    val cursor = context.contentResolver.query(
+        uri,
+        null,
+        null,
+        null,
+        null
+    )
+
+    cursor?.use {
+        val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+
+        if (nameIndex >= 0 && it.moveToFirst()) {
+            return it.getString(nameIndex)
+        }
+    }
+
+    return null
 }
