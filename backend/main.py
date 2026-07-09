@@ -108,3 +108,26 @@ def get_task(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
 
     return task
+
+@app.get("/download/{task_id}")
+def download_result(task_id: str):
+    task = task_service.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result_path = task.get("result_path")
+
+    if not result_path:
+        raise HTTPException(status_code=404, detail="Result file not ready")
+
+    result_file = Path(result_path)
+
+    if not result_file.exists():
+        raise HTTPException(status_code=404, detail="Result file not found")
+
+    return FileResponse(
+        path=result_file,
+        filename="result.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
