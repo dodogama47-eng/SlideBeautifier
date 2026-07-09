@@ -17,7 +17,7 @@ class OpenAIService:
 
     def generate_slide_plan(self, content_text: str) -> str:
         response = self.client.responses.create(
-            model="gpt-4.1-mini",
+            model="gpt-5.6-sol",
             input=f"""
 You are an AI PowerPoint layout assistant.
 
