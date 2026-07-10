@@ -5,7 +5,7 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,6 +15,7 @@ from services.ppt_reader import PptReader
 from services.ai_design_planner import AIDesignPlanner
 from services.ppt_preview import PptPreviewService
 from services.native_template_fill_service import NativeTemplateFillService
+from services.pptx_repair_service import PptxRepairService
 
 
 app = FastAPI(title="SlideBeautifier Backend")
@@ -40,6 +41,7 @@ ppt_reader = PptReader()
 ai_design_planner = AIDesignPlanner()
 ppt_preview_service = PptPreviewService()
 template_fill_service = NativeTemplateFillService()
+pptx_repair_service = PptxRepairService()
 
 
 def get_task_result_dir(task_id: str) -> Path:
@@ -87,11 +89,13 @@ def build_preview_urls(
 
 def build_generate_response(
     request: Request,
-    task_id: str
+    task_id: str,
+    generation_mode: str
 ) -> dict:
     return {
         "task_id": task_id,
         "status": "completed",
+        "generation_mode": generation_mode,
         "download_url": str(
             request.url_for(
                 "download_result",
@@ -116,12 +120,30 @@ def build_generate_response(
     }
 
 
+def normalize_generation_mode(mode: str) -> str:
+    mode = str(mode or "strict").strip().lower()
+
+    if mode not in ["strict", "creative"]:
+        return "strict"
+
+    return mode
+
+
+def check_has_problem(check_report: dict) -> bool:
+    summary = check_report.get("summary", {})
+    warn = int(summary.get("warn", 0))
+    error = int(summary.get("error", 0))
+
+    return warn > 0 or error > 0
+
+
 @app.get("/api/health")
 def health_check():
     return {
         "status": "ok",
         "message": "connected",
-        "engine": "native_template_fill_rewrite_v1"
+        "engine": "template_fill_slot_hierarchy_v8",
+        "modes": "strict,creative"
     }
 
 
@@ -129,9 +151,11 @@ def health_check():
 async def generate_presentation(
     request: Request,
     format_file: UploadFile = File(...),
-    text_file: UploadFile = File(...)
+    text_file: UploadFile = File(...),
+    generation_mode: str = Form("strict")
 ):
     task_id = str(uuid4())
+    generation_mode = normalize_generation_mode(generation_mode)
 
     if not format_file.filename or not format_file.filename.lower().endswith(".pptx"):
         raise HTTPException(
@@ -179,7 +203,11 @@ async def generate_presentation(
 
         slide_library_path = analysis_dir / "slide_library.json"
         fill_plan_path = analysis_dir / "fill_plan.json"
+        repaired_fill_plan_path = analysis_dir / "fill_plan_repaired.json"
+        final_coverage_fill_plan_path = analysis_dir / "fill_plan_final_coverage.json"
         check_report_path = analysis_dir / "check_report.json"
+        repaired_check_report_path = analysis_dir / "check_report_repaired.json"
+        pptx_repair_report_path = analysis_dir / "pptx_repair_report.json"
 
         task = task_service.create_task(
             task_id=task_id,
@@ -188,8 +216,11 @@ async def generate_presentation(
         )
 
         task["status"] = "processing"
+        task["generation_mode"] = generation_mode
         task["result_path"] = str(result_path)
         task["analysis_dir"] = str(analysis_dir)
+
+        print(f"Generation mode: {generation_mode}")
 
         print("Step 1: extracting content slides...")
         content_slides = ppt_reader.extract_content_slides(content_path)
@@ -206,13 +237,20 @@ async def generate_presentation(
             output_json_path=slide_library_path
         )
 
-        print("Step 3: generating native fill_plan with AI...")
+        print("Step 3: generating native fill_plan...")
 
         try:
-            fill_plan = ai_design_planner.generate_fill_plan(
-                content_slides=content_slides,
-                slide_library=slide_library
-            )
+            if generation_mode == "creative":
+                fill_plan = ai_design_planner.generate_creative_fill_plan(
+                    content_slides=content_slides,
+                    slide_library=slide_library
+                )
+            else:
+                fill_plan = ai_design_planner.generate_fill_plan(
+                    content_slides=content_slides,
+                    slide_library=slide_library
+                )
+
         except Exception:
             print("AI fill planner failed:")
             traceback.print_exc()
@@ -220,7 +258,8 @@ async def generate_presentation(
             print("Using fallback fill plan...")
             fill_plan = ai_design_planner.build_fallback_fill_plan(
                 content_slides=content_slides,
-                slide_library=slide_library
+                slide_library=slide_library,
+                mode=generation_mode
             )
 
         template_fill_service.save_fill_plan(
@@ -235,15 +274,75 @@ async def generate_presentation(
             output_json_path=check_report_path
         )
 
+        print(f"Initial check summary: {check_report.get('summary', {})}")
+
+        final_fill_plan = fill_plan
+        final_check_report = check_report
+
+        if check_has_problem(check_report):
+            print("Step 3.6: repairing fill_plan...")
+
+            try:
+                if generation_mode == "creative":
+                    repaired_fill_plan = ai_design_planner.repair_creative_fill_plan(
+                        content_slides=content_slides,
+                        slide_library=slide_library,
+                        fill_plan=fill_plan,
+                        check_report=check_report
+                    )
+                else:
+                    repaired_fill_plan = ai_design_planner.repair_fill_plan(
+                        content_slides=content_slides,
+                        slide_library=slide_library,
+                        fill_plan=fill_plan,
+                        check_report=check_report
+                    )
+
+                template_fill_service.save_fill_plan(
+                    fill_plan=repaired_fill_plan,
+                    output_json_path=repaired_fill_plan_path
+                )
+
+                repaired_check_report = template_fill_service.check_fill_plan(
+                    slide_library=slide_library,
+                    fill_plan=repaired_fill_plan,
+                    output_json_path=repaired_check_report_path
+                )
+
+                print(f"Repaired check summary: {repaired_check_report.get('summary', {})}")
+
+                final_fill_plan = repaired_fill_plan
+                final_check_report = repaired_check_report
+
+            except Exception:
+                print("AI repair failed. Using original fill_plan.")
+                traceback.print_exc()
+
+        if generation_mode == "strict":
+            print("Step 3.7: enforcing strict content coverage...")
+
+            final_fill_plan = ai_design_planner.enforce_content_coverage(
+                content_slides=content_slides,
+                slide_library=slide_library,
+                fill_plan=final_fill_plan
+            )
+
+            template_fill_service.save_fill_plan(
+                fill_plan=final_fill_plan,
+                output_json_path=final_coverage_fill_plan_path
+            )
+
+            task["final_coverage_fill_plan_path"] = str(final_coverage_fill_plan_path)
+
         task["fill_plan_path"] = str(fill_plan_path)
         task["slide_library_path"] = str(slide_library_path)
         task["check_report_path"] = str(check_report_path)
-        task["check_summary"] = check_report.get("summary", {})
+        task["check_summary"] = final_check_report.get("summary", {})
 
-        print("Step 4: applying fill_plan to native PPTX template...")
+        print("Step 4: applying final fill_plan to native PPTX template...")
         template_fill_service.apply_fill_plan(
             reference_path=reference_path,
-            fill_plan=fill_plan,
+            fill_plan=final_fill_plan,
             result_path=result_path,
             slide_library=slide_library
         )
@@ -253,6 +352,17 @@ async def generate_presentation(
                 status_code=500,
                 detail="Generated result PPTX is empty"
             )
+
+        print("Step 4.1: repairing PPTX zip structure...")
+        pptx_repair_report = pptx_repair_service.repair_pptx(
+            pptx_path=result_path,
+            report_path=pptx_repair_report_path
+        )
+
+        task["pptx_repair_report_path"] = str(pptx_repair_report_path)
+
+        print(f"PPTX repair status: {pptx_repair_report.get('status')}")
+        print(f"Duplicate entries removed: {pptx_repair_report.get('duplicate_entries_removed')}")
 
         print("Step 5: generating preview images...")
 
@@ -283,7 +393,8 @@ async def generate_presentation(
 
         return build_generate_response(
             request=request,
-            task_id=task_id
+            task_id=task_id,
+            generation_mode=generation_mode
         )
 
     except HTTPException:

@@ -1,23 +1,25 @@
 package com.example.slidebeautifier.repository
 
-import com.example.slidebeautifier.data.Constants
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
-import com.example.slidebeautifier.network.BackendClient
+import android.provider.MediaStore
+import com.example.slidebeautifier.data.Constants
 import com.example.slidebeautifier.model.GenerateResponse
+import com.example.slidebeautifier.network.BackendClient
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import android.content.ContentValues
-import android.provider.MediaStore
+
 class BackendRepository(
     private val context: Context
 ) {
 
     suspend fun uploadFiles(
         formatUri: Uri,
-        textUri: Uri
+        textUri: Uri,
+        generationMode: String
     ): GenerateResponse {
         val formatPart = createFilePart(
             uri = formatUri,
@@ -31,13 +33,21 @@ class BackendRepository(
             fileName = "content.pptx"
         )
 
+        val modeBody = generationMode.toRequestBody(
+            "text/plain".toMediaTypeOrNull()
+        )
+
         return BackendClient.service.generatePpt(
             formatFile = formatPart,
-            textFile = textPart
+            textFile = textPart,
+            generationMode = modeBody
         )
     }
 
-    suspend fun downloadResult(downloadUrl: String, taskId: String): String {
+    suspend fun downloadResult(
+        downloadUrl: String,
+        taskId: String
+    ): String {
         val fullUrl = if (downloadUrl.startsWith("http")) {
             downloadUrl
         } else {
@@ -52,15 +62,21 @@ class BackendRepository(
 
         val contentValues = ContentValues()
 
-        contentValues.put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+        contentValues.put(
+            MediaStore.Downloads.DISPLAY_NAME,
+            fileName
+        )
+
         contentValues.put(
             MediaStore.Downloads.MIME_TYPE,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
+
         contentValues.put(
             MediaStore.Downloads.RELATIVE_PATH,
             Environment.DIRECTORY_DOWNLOADS
         )
+
         val uri = resolver.insert(
             MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             contentValues
@@ -110,4 +126,4 @@ class BackendRepository(
             requestBody
         )
     }
-    }
+}
