@@ -1,6 +1,7 @@
 package com.example.slidebeautifier.ui
-import android.content.Intent
-import android.net.Uri
+
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
@@ -16,7 +17,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -45,6 +44,8 @@ import com.example.slidebeautifier.model.PreviewResultData
 import com.example.slidebeautifier.ui.components.GlassBackground
 import com.example.slidebeautifier.ui.components.GlassButton
 import com.example.slidebeautifier.ui.components.GlassCard
+import com.example.slidebeautifier.repository.BackendRepository
+import kotlinx.coroutines.launch
 
 enum class PreviewMode {
     ORIGINAL,
@@ -73,6 +74,16 @@ fun ResultPreviewScreen(
     }
 
     val context = LocalContext.current
+
+    val scope = rememberCoroutineScope()
+
+    val backendRepository = remember {
+        BackendRepository(context)
+    }
+
+    var downloadStatus by remember {
+        mutableStateOf("")
+    }
 
     GlassBackground {
         Column(
@@ -231,16 +242,54 @@ fun ResultPreviewScreen(
                 Spacer(modifier = Modifier.height(18.dp))
 
                 GlassButton(
-                    text = "Download Beautified PPTX",
-                    enabled = previewData.downloadUrl != null,
+                    text = if (downloadStatus == "downloading") {
+                        "Downloading..."
+                    } else {
+                        "Download Beautified PPTX"
+                    },
+                    enabled = !previewData.downloadUrl.isNullOrBlank() &&
+                            downloadStatus != "downloading",
                     onClick = {
-                        val url = previewData.downloadUrl
-                        if (url != null) {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                            context.startActivity(intent)
+                        val downloadUrl = previewData.downloadUrl
+
+                        if (!downloadUrl.isNullOrBlank()) {
+                            scope.launch {
+                                try {
+                                    downloadStatus = "downloading"
+
+                                    val savedFileName = backendRepository.downloadResult(
+                                        downloadUrl = downloadUrl,
+                                        taskId = previewData.taskId
+                                    )
+
+                                    downloadStatus =
+                                        "Saved to Downloads/$savedFileName"
+                                } catch (e: Exception) {
+                                    downloadStatus =
+                                        "Download failed: ${e.message}"
+                                }
+                            }
                         }
                     }
                 )
+                if (
+                    downloadStatus.isNotBlank() &&
+                    downloadStatus != "downloading"
+                ) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = downloadStatus,
+                        color = if (downloadStatus.startsWith("Download failed")) {
+                            Color(0xFFB42318)
+                        } else {
+                            Color(0xFF027A48)
+                        },
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
