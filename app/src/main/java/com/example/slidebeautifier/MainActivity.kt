@@ -30,6 +30,10 @@ class MainActivity : ComponentActivity() {
 fun SlideBeautifierApp() {
     var currentScreen by remember { mutableStateOf("home") }
 
+    var previewData by remember {
+        mutableStateOf<PreviewResultData?>(null)
+    }
+
     when (currentScreen) {
         "home" -> HomeScreen(
             onStartClick = {
@@ -37,19 +41,26 @@ fun SlideBeautifierApp() {
             }
         )
 
-        "upload" -> UploadScreen()
-
-        "preview" -> ResultPreviewScreen(
-            previewData = PreviewResultData(
-                taskId = "demo-task",
-                originalPreviewImages = emptyList(),
-                referencePreviewImages = emptyList(),
-                beautifiedPreviewImages = emptyList(),
-                downloadUrl = null
-            ),
-            onBackClick = {
-                currentScreen = "upload"
+        "upload" -> UploadScreen(
+            onPreviewReady = { result ->
+                previewData = result
+                currentScreen = "preview"
             }
         )
+
+        "preview" -> {
+            val data = previewData
+
+            if (data != null) {
+                ResultPreviewScreen(
+                    previewData = data,
+                    onBackClick = {
+                        currentScreen = "upload"
+                    }
+                )
+            } else {
+                currentScreen = "upload"
+            }
+        }
     }
 }

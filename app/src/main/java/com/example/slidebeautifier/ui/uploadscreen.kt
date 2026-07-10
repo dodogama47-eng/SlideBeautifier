@@ -34,9 +34,12 @@ import com.example.slidebeautifier.ui.components.GlassBackground
 import com.example.slidebeautifier.ui.components.GlassButton
 import com.example.slidebeautifier.ui.components.GlassCard
 import kotlinx.coroutines.launch
+import com.example.slidebeautifier.model.PreviewResultData
 
 @Composable
-fun UploadScreen() {
+fun UploadScreen(
+    onPreviewReady:(PreviewResultData) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val backendRepository = remember { BackendRepository(context) }
@@ -230,13 +233,17 @@ fun UploadScreen() {
                                         textUri = contentUri
                                     )
 
-                                    val savedFileName = backendRepository.downloadResult(
-                                        downloadUrl = response.download_url,
-                                        taskId = response.task_id
-                                    )
+                                    statusText = "Completed"
 
-                                    statusText =
-                                        "Completed\nSaved to Downloads/$savedFileName"
+                                    onPreviewReady(
+                                        PreviewResultData(
+                                            taskId = response.task_id,
+                                            originalPreviewImages = response.original_preview_images,
+                                            referencePreviewImages = response.reference_preview_images,
+                                            beautifiedPreviewImages = response.beautified_preview_images,
+                                            downloadUrl = response.download_url
+                                        )
+                                    )
                                 } catch (e: Exception) {
                                     statusText = "Failed: ${e.message}"
                                 } finally {
