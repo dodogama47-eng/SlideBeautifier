@@ -2,6 +2,7 @@ from pathlib import Path
 from copy import deepcopy
 import json
 import re
+import unicodedata
 import zipfile
 from xml.etree import ElementTree as ET
 
@@ -10,12 +11,14 @@ P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 NS = {
     "p": P_NS,
     "a": A_NS,
     "r": R_NS,
     "rel": REL_NS,
+    "ct": CT_NS,
 }
 
 SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
@@ -27,15 +30,21 @@ def qn(ns: str, tag: str) -> str:
 
 class NativeTemplateFillService:
     """
-    SlideBeautifier native PPTX template fill engine.
+    SlideBeautifier Native Template Fill Engine.
 
-    自己重写，不复制外部包。
+    自己重写，不复制第三方包。
 
-    核心思路：
-    1. 把 reference.pptx 分析成 slide_library
-    2. 每个可替换文本框都有 slot_id
-    3. AI 只输出 source_slide + replacements
-    4. 后端克隆 source_slide，然后按 slot_id 替换原文本框
+    思路：
+    1. analyze_reference(): 把 reference.pptx 分析成 slide_library
+    2. AI 生成 fill_plan: source_slide + replacements(slot_id, text, role)
+    3. check_fill_plan(): 检查 slot、role、容量、文本长度
+    4. apply_fill_plan(): 克隆原 slide XML，替换原文本框内容
+
+    重点：
+    - 不新建 textbox
+    - 不靠坐标乱放
+    - 直接替换原 PowerPoint shape 里的文字
+    - 继承原字体、字号、颜色、位置、图层
     """
 
     def analyze_reference(
@@ -94,7 +103,7 @@ class NativeTemplateFillService:
             )
 
         library = {
-            "schema": "slidebeautifier_native_template_library.v1",
+            "schema": "slidebeautifier_native_template_library.v2",
             "source_pptx": str(reference_path),
             "slide_count": len(slides),
             "slides": slides
@@ -144,7 +153,10 @@ class NativeTemplateFillService:
             )
         )
 
-        self._clear_presentation_slide_list(presentation_root, rels_root)
+        self._clear_presentation_slide_list(
+            presentation_root=presentation_root,
+            rels_root=rels_root
+        )
 
         max_slide_number = self._max_existing_slide_number(entries)
         next_slide_number = max_slide_number + 1
@@ -157,7 +169,7 @@ class NativeTemplateFillService:
             raise ValueError("fill_plan.slides must be a non-empty list")
 
         for output_index, plan_slide in enumerate(output_slides):
-            source_slide = int(plan_slide.get("source_slide", 1))
+            source_slide = self._safe_int(plan_slide.get("source_slide"), default=1)
 
             if source_slide not in source_slide_refs:
                 source_slide = 1
@@ -175,8 +187,7 @@ class NativeTemplateFillService:
             self._clear_replaceable_text(
                 slide_root=slide_root,
                 source_slide=source_slide,
-                slide_library=slide_library,
-                keep_decorative=True
+                slide_library=slide_library
             )
 
             replacements = plan_slide.get("replacements", [])
@@ -234,12 +245,12 @@ class NativeTemplateFillService:
         }
 
         for output_index, plan_slide in enumerate(fill_plan.get("slides", []), start=1):
-            try:
-                source_slide = int(plan_slide.get("source_slide"))
-            except Exception:
+            source_slide = self._safe_int(plan_slide.get("source_slide"), default=None)
+
+            if source_slide is None:
                 errors.append(
                     {
-                        "slide": output_index,
+                        "output_slide": output_index,
                         "message": "source_slide missing or invalid"
                     }
                 )
@@ -250,8 +261,9 @@ class NativeTemplateFillService:
             if library_slide is None:
                 errors.append(
                     {
-                        "slide": output_index,
-                        "message": f"source_slide {source_slide} not found"
+                        "output_slide": output_index,
+                        "source_slide": source_slide,
+                        "message": "source_slide not found in slide_library"
                     }
                 )
                 continue
@@ -262,34 +274,166 @@ class NativeTemplateFillService:
                 if slot.get("slot_id")
             }
 
-            for replacement in plan_slide.get("replacements", []):
+            used_slot_ids = set()
+
+            replacements = plan_slide.get("replacements", [])
+
+            if not isinstance(replacements, list):
+                errors.append(
+                    {
+                        "output_slide": output_index,
+                        "source_slide": source_slide,
+                        "message": "replacements must be a list"
+                    }
+                )
+                continue
+
+            for replacement_index, replacement in enumerate(replacements, start=1):
                 slot_id = replacement.get("slot_id")
-                text = str(replacement.get("text", ""))
+                text = str(replacement.get("text", "")).strip()
+                replacement_role = str(replacement.get("role", "")).strip()
+
+                if not slot_id:
+                    errors.append(
+                        {
+                            "output_slide": output_index,
+                            "replacement": replacement_index,
+                            "message": "slot_id missing"
+                        }
+                    )
+                    continue
+
+                if slot_id in used_slot_ids:
+                    errors.append(
+                        {
+                            "output_slide": output_index,
+                            "slot_id": slot_id,
+                            "message": "duplicate replacement for same slot_id"
+                        }
+                    )
+                    continue
+
+                used_slot_ids.add(slot_id)
 
                 slot = slots_by_id.get(slot_id)
 
                 if slot is None:
                     errors.append(
                         {
-                            "slide": output_index,
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
                             "slot_id": slot_id,
                             "message": "slot_id not found on selected source_slide"
                         }
                     )
                     continue
 
-                capacity = slot.get("capacity_chars", 80)
-
-                if len(text) > capacity * 1.4:
+                if not text:
                     warnings.append(
                         {
-                            "slide": output_index,
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
                             "slot_id": slot_id,
-                            "message": "text may be too long for this slot",
-                            "text_length": len(text),
-                            "capacity_chars": capacity
+                            "message": "empty replacement text"
                         }
                     )
+                    continue
+
+                slot_role = slot.get("role")
+                capacity = int(slot.get("capacity_chars", 80))
+                visual_width = self._visual_width(text)
+
+                if slot_role in ["decorative_candidate", "noise_candidate"]:
+                    errors.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "message": "replacement uses decorative/noise slot"
+                        }
+                    )
+                    continue
+
+                if replacement_role == "title" and slot_role not in ["title_candidate", "body_candidate"]:
+                    warnings.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "replacement_role": replacement_role,
+                            "message": "title text is not placed in a title/body slot"
+                        }
+                    )
+
+                if replacement_role in ["body", "card", "step"] and slot_role == "label_candidate":
+                    warnings.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "replacement_role": replacement_role,
+                            "message": "body/card text placed in label slot"
+                        }
+                    )
+
+                if slot_role == "label_candidate" and visual_width > max(12, capacity * 0.8):
+                    warnings.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "visual_width": visual_width,
+                            "capacity_chars": capacity,
+                            "message": "label slot text too long"
+                        }
+                    )
+
+                if visual_width > capacity * 1.15:
+                    warnings.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "visual_width": visual_width,
+                            "capacity_chars": capacity,
+                            "message": "text exceeds estimated slot capacity"
+                        }
+                    )
+
+                line_count = len([line for line in text.splitlines() if line.strip()])
+                original_paragraph_count = int(slot.get("paragraph_count", 1) or 1)
+
+                if line_count > max(original_paragraph_count + 2, 4):
+                    warnings.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "line_count": line_count,
+                            "original_paragraph_count": original_paragraph_count,
+                            "message": "too many lines for original slot"
+                        }
+                    )
+
+            body_slots = [
+                slot for slot in library_slide.get("slots", [])
+                if slot.get("role") == "body_candidate"
+            ]
+
+            if len(replacements) >= 3 and len(body_slots) == 0:
+                warnings.append(
+                    {
+                        "output_slide": output_index,
+                        "source_slide": source_slide,
+                        "message": "selected template has many replacements but no body_candidate slots"
+                    }
+                )
 
         report = {
             "summary": {
@@ -305,6 +449,10 @@ class NativeTemplateFillService:
             self._write_json(output_json_path, report)
 
         return report
+
+    def needs_repair(self, check_report: dict) -> bool:
+        summary = check_report.get("summary", {})
+        return int(summary.get("warn", 0)) > 0 or int(summary.get("error", 0)) > 0
 
     def _parse_slide_refs(
         self,
@@ -337,10 +485,7 @@ class NativeTemplateFillService:
 
         return result
 
-    def _normalize_slide_target(
-        self,
-        target: str
-    ) -> str:
+    def _normalize_slide_target(self, target: str) -> str:
         target = target.replace("\\", "/")
 
         if target.startswith("/"):
@@ -429,10 +574,7 @@ class NativeTemplateFillService:
 
         return shape_id, name
 
-    def _shape_text(
-        self,
-        shape: ET.Element
-    ) -> str:
+    def _shape_text(self, shape: ET.Element) -> str:
         lines = []
 
         for paragraph in shape.findall(".//a:p", NS):
@@ -449,10 +591,7 @@ class NativeTemplateFillService:
 
         return "\n".join(lines)
 
-    def _paragraph_texts(
-        self,
-        shape: ET.Element
-    ) -> list[str]:
+    def _paragraph_texts(self, shape: ET.Element) -> list[str]:
         result = []
 
         for paragraph in shape.findall(".//a:p", NS):
@@ -466,10 +605,7 @@ class NativeTemplateFillService:
 
         return result
 
-    def _shape_geometry(
-        self,
-        shape: ET.Element
-    ) -> dict:
+    def _shape_geometry(self, shape: ET.Element) -> dict:
         xfrm = shape.find(".//p:spPr/a:xfrm", NS)
 
         if xfrm is None:
@@ -483,23 +619,14 @@ class NativeTemplateFillService:
         off = xfrm.find("a:off", NS)
         ext = xfrm.find("a:ext", NS)
 
-        def to_int(value):
-            try:
-                return int(value)
-            except Exception:
-                return 0
-
         return {
-            "x": to_int(off.attrib.get("x")) if off is not None else 0,
-            "y": to_int(off.attrib.get("y")) if off is not None else 0,
-            "width": to_int(ext.attrib.get("cx")) if ext is not None else 0,
-            "height": to_int(ext.attrib.get("cy")) if ext is not None else 0
+            "x": self._safe_int(off.attrib.get("x"), 0) if off is not None else 0,
+            "y": self._safe_int(off.attrib.get("y"), 0) if off is not None else 0,
+            "width": self._safe_int(ext.attrib.get("cx"), 0) if ext is not None else 0,
+            "height": self._safe_int(ext.attrib.get("cy"), 0) if ext is not None else 0
         }
 
-    def _font_size(
-        self,
-        shape: ET.Element
-    ) -> float | None:
+    def _font_size(self, shape: ET.Element) -> float | None:
         sizes = []
 
         for node in shape.findall(".//a:rPr", NS) + shape.findall(".//a:defRPr", NS):
@@ -561,23 +688,32 @@ class NativeTemplateFillService:
         if "title" in normalized_name or "标题" in normalized_name:
             return "title_candidate"
 
-        if order == 1 and len(text) <= 80:
-            return "title_candidate"
+        if "subtitle" in normalized_name or "副标题" in normalized_name:
+            return "subtitle_candidate"
 
+        x = geometry.get("x", 0)
         y = geometry.get("y", 0)
         width = geometry.get("width", 0)
         height = geometry.get("height", 0)
 
+        area = width * height
+
+        if order == 1 and len(text) <= 100:
+            return "title_candidate"
+
         if font_size and font_size >= 26 and len(text) <= 120:
             return "title_candidate"
 
-        if y < 1300000 and len(text) <= 100:
+        if y < 1300000 and len(text) <= 120:
             return "title_candidate"
 
-        if paragraph_count >= 3 or len(text) >= 100:
+        if y < 2300000 and len(text) <= 140 and area < 2500000000000:
+            return "subtitle_candidate"
+
+        if paragraph_count >= 3 or len(text) >= 80:
             return "body_candidate"
 
-        if width >= 3000000 and height >= 800000:
+        if width >= 2600000 and height >= 700000:
             return "body_candidate"
 
         if len(text) <= 40:
@@ -585,10 +721,7 @@ class NativeTemplateFillService:
 
         return "body_candidate"
 
-    def _is_noise_text(
-        self,
-        text: str
-    ) -> bool:
+    def _is_noise_text(self, text: str) -> bool:
         if not text:
             return False
 
@@ -616,6 +749,8 @@ class NativeTemplateFillService:
         if font_size is None or font_size <= 0:
             if role == "title_candidate":
                 font_size = 28
+            elif role == "subtitle_candidate":
+                font_size = 18
             elif role == "body_candidate":
                 font_size = 16
             else:
@@ -631,9 +766,11 @@ class NativeTemplateFillService:
         capacity = chars_per_line * max_lines
 
         if role == "title_candidate":
+            capacity = int(capacity * 0.70)
+        elif role == "subtitle_candidate":
             capacity = int(capacity * 0.75)
         elif role == "label_candidate":
-            capacity = int(capacity * 0.55)
+            capacity = int(capacity * 0.50)
 
         return max(8, min(capacity, 300))
 
@@ -672,8 +809,7 @@ class NativeTemplateFillService:
         self,
         slide_root: ET.Element,
         source_slide: int,
-        slide_library: dict,
-        keep_decorative: bool = True
+        slide_library: dict
     ) -> None:
         slots_by_shape_id = {}
 
@@ -682,7 +818,8 @@ class NativeTemplateFillService:
                 continue
 
             for slot in slide.get("slots", []):
-                slots_by_shape_id[int(slot.get("shape_id", -1))] = slot
+                shape_id = self._safe_int(slot.get("shape_id"), default=-1)
+                slots_by_shape_id[shape_id] = slot
 
         for order, shape in enumerate(slide_root.findall(".//p:sp", NS), start=1):
             shape_id, _shape_name = self._shape_identity(shape, order)
@@ -693,7 +830,7 @@ class NativeTemplateFillService:
 
             role = slot.get("role")
 
-            if keep_decorative and role == "decorative_candidate":
+            if role in ["decorative_candidate", "noise_candidate"]:
                 continue
 
             self._set_shape_text(shape, "")
@@ -840,17 +977,14 @@ class NativeTemplateFillService:
 
         ET.SubElement(
             content_types_root,
-            "Override",
+            qn(CT_NS, "Override"),
             {
                 "PartName": slide_part,
                 "ContentType": "application/vnd.openxmlformats-officedocument.presentationml.slide+xml"
             }
         )
 
-    def _max_existing_slide_number(
-        self,
-        entries: dict[str, bytes]
-    ) -> int:
+    def _max_existing_slide_number(self, entries: dict[str, bytes]) -> int:
         result = 0
 
         for name in entries.keys():
@@ -861,10 +995,7 @@ class NativeTemplateFillService:
 
         return result
 
-    def _max_existing_slide_id(
-        self,
-        presentation_root: ET.Element
-    ) -> int:
+    def _max_existing_slide_id(self, presentation_root: ET.Element) -> int:
         result = 255
 
         for node in presentation_root.findall(".//p:sldId", NS):
@@ -875,10 +1006,7 @@ class NativeTemplateFillService:
 
         return result
 
-    def _max_existing_rid_number(
-        self,
-        rels_root: ET.Element
-    ) -> int:
+    def _max_existing_rid_number(self, rels_root: ET.Element) -> int:
         result = 0
 
         for rel in rels_root.findall(qn(REL_NS, "Relationship")):
@@ -890,10 +1018,7 @@ class NativeTemplateFillService:
 
         return result
 
-    def _slide_rels_part(
-        self,
-        slide_part: str
-    ) -> str:
+    def _slide_rels_part(self, slide_part: str) -> str:
         path = Path(slide_part)
         return f"{path.parent}/_rels/{path.name}.rels".replace("\\", "/")
 
@@ -901,21 +1026,14 @@ class NativeTemplateFillService:
         root = ET.Element(qn(REL_NS, "Relationships"))
         return self._xml_bytes(root)
 
-    def _xml_bytes(
-        self,
-        root: ET.Element
-    ) -> bytes:
+    def _xml_bytes(self, root: ET.Element) -> bytes:
         return ET.tostring(
             root,
             encoding="utf-8",
             xml_declaration=True
         )
 
-    def _write_json(
-        self,
-        path: Path,
-        data: dict
-    ) -> None:
+    def _write_json(self, path: Path, data: dict) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -926,3 +1044,24 @@ class NativeTemplateFillService:
                 ensure_ascii=False,
                 indent=2
             )
+
+    def _visual_width(self, text: str) -> float:
+        width = 0.0
+
+        for char in "".join(text.split()):
+            east_asian_width = unicodedata.east_asian_width(char)
+
+            if east_asian_width in {"F", "W"}:
+                width += 2.0
+            elif east_asian_width == "A":
+                width += 1.5
+            else:
+                width += 1.0
+
+        return width
+
+    def _safe_int(self, value, default=None):
+        try:
+            return int(value)
+        except Exception:
+            return default

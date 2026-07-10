@@ -116,12 +116,20 @@ def build_generate_response(
     }
 
 
+def check_has_problem(check_report: dict) -> bool:
+    summary = check_report.get("summary", {})
+    warn = int(summary.get("warn", 0))
+    error = int(summary.get("error", 0))
+
+    return warn > 0 or error > 0
+
+
 @app.get("/api/health")
 def health_check():
     return {
         "status": "ok",
         "message": "connected",
-        "engine": "native_template_fill_rewrite_v1"
+        "engine": "native_template_fill_repair_v4"
     }
 
 
@@ -179,7 +187,9 @@ async def generate_presentation(
 
         slide_library_path = analysis_dir / "slide_library.json"
         fill_plan_path = analysis_dir / "fill_plan.json"
+        repaired_fill_plan_path = analysis_dir / "fill_plan_repaired.json"
         check_report_path = analysis_dir / "check_report.json"
+        repaired_check_report_path = analysis_dir / "check_report_repaired.json"
 
         task = task_service.create_task(
             task_id=task_id,
@@ -235,15 +245,51 @@ async def generate_presentation(
             output_json_path=check_report_path
         )
 
+        print(f"Initial check summary: {check_report.get('summary', {})}")
+
+        final_fill_plan = fill_plan
+        final_check_report = check_report
+
+        if check_has_problem(check_report):
+            print("Step 3.6: repairing fill_plan with AI...")
+
+            try:
+                repaired_fill_plan = ai_design_planner.repair_fill_plan(
+                    content_slides=content_slides,
+                    slide_library=slide_library,
+                    fill_plan=fill_plan,
+                    check_report=check_report
+                )
+
+                template_fill_service.save_fill_plan(
+                    fill_plan=repaired_fill_plan,
+                    output_json_path=repaired_fill_plan_path
+                )
+
+                repaired_check_report = template_fill_service.check_fill_plan(
+                    slide_library=slide_library,
+                    fill_plan=repaired_fill_plan,
+                    output_json_path=repaired_check_report_path
+                )
+
+                print(f"Repaired check summary: {repaired_check_report.get('summary', {})}")
+
+                final_fill_plan = repaired_fill_plan
+                final_check_report = repaired_check_report
+
+            except Exception:
+                print("AI repair failed. Using original fill_plan.")
+                traceback.print_exc()
+
         task["fill_plan_path"] = str(fill_plan_path)
         task["slide_library_path"] = str(slide_library_path)
         task["check_report_path"] = str(check_report_path)
-        task["check_summary"] = check_report.get("summary", {})
+        task["check_summary"] = final_check_report.get("summary", {})
 
-        print("Step 4: applying fill_plan to native PPTX template...")
+        print("Step 4: applying final fill_plan to native PPTX template...")
         template_fill_service.apply_fill_plan(
             reference_path=reference_path,
-            fill_plan=fill_plan,
+            fill_plan=final_fill_plan,
             result_path=result_path,
             slide_library=slide_library
         )
