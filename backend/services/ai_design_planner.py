@@ -17,10 +17,6 @@ class AIDesignPlanner:
         self.client = OpenAI(api_key=api_key)
         self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-    # ============================================================
-    # Strict mode: keep original content
-    # ============================================================
-
     def generate_fill_plan(
         self,
         content_slides: list[dict],
@@ -243,10 +239,6 @@ Slot hierarchy rules:
             slide_library=slide_library
         )
 
-    # ============================================================
-    # Creative mode: allow rewrite / shorten / combine
-    # ============================================================
-
     def generate_creative_fill_plan(
         self,
         content_slides: list[dict],
@@ -431,10 +423,6 @@ Repair rules:
             slide_library=slide_library
         )
 
-    # ============================================================
-    # Fallback
-    # ============================================================
-
     def build_fallback_fill_plan(
         self,
         content_slides: list[dict],
@@ -473,26 +461,12 @@ Repair rules:
             "slides": slides
         }
 
-    # ============================================================
-    # Content coverage safety pass
-    # ============================================================
-
     def enforce_content_coverage(
         self,
         content_slides: list[dict],
         slide_library: dict,
         fill_plan: dict
     ) -> dict:
-        """
-        Strict mode final safety pass.
-
-        目的：
-        - 防止 AI fill_plan 漏掉原文内容
-        - 防止清空模板旧文字后，没有足够内容写回
-        - strict 模式下强制保证所有 content_id 都被写入 result.pptx
-
-        这个方法不改写、不总结、不省略，只做补全分配。
-        """
         if not isinstance(fill_plan, dict):
             fill_plan = {}
 
@@ -671,10 +645,6 @@ Repair rules:
             "slides": final_slides
         }
 
-    # ============================================================
-    # OpenAI helpers
-    # ============================================================
-
     def _chat_json(
         self,
         system_prompt: str,
@@ -717,10 +687,6 @@ Repair rules:
                 return json.loads(match.group(0))
 
             raise ValueError(f"AI did not return valid JSON: {raw}")
-
-    # ============================================================
-    # Normalize strict
-    # ============================================================
 
     def _normalize_strict_plan(
         self,
@@ -920,10 +886,6 @@ Repair rules:
             "replacements": normalized_replacements
         }
 
-    # ============================================================
-    # Normalize creative
-    # ============================================================
-
     def _normalize_creative_plan(
         self,
         plan: Any,
@@ -1061,10 +1023,6 @@ Repair rules:
             "layout_rationale": self._normalize_layout_rationale(ai_slide),
             "replacements": replacements
         }
-
-    # ============================================================
-    # Fallback slides
-    # ============================================================
 
     def _fallback_strict_plan_slide(
         self,
@@ -1329,10 +1287,6 @@ Repair rules:
             "replacements": replacements
         }
 
-    # ============================================================
-    # Content inventory
-    # ============================================================
-
     def _build_content_inventory(self, content_slides: list[dict]) -> dict:
         pages = []
 
@@ -1550,10 +1504,6 @@ Repair rules:
         )
 
         return "\n".join(block["text"] for block in blocks)
-
-    # ============================================================
-    # Shared helpers
-    # ============================================================
 
     def _safe_source_slide(
         self,

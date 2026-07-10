@@ -28,29 +28,6 @@ def qn(ns: str, tag: str) -> str:
 
 
 class NativeTemplateFillService:
-    """
-    Strict native template-fill engine.
-
-    当前版本原则：
-    - 不做 AutoFit
-    - 不移动文本框
-    - 不改字号
-    - 不删除卡片 / 色块 / 图标
-    - 不新建 textbox
-    - 只复制参考 PPT 原生 slide
-    - 清空该 slide 的旧模板文字
-    - 根据 fill_plan 只替换指定 slot
-
-    重点：
-    - analyzer 会保留更多 slot，包括 label / subtitle / body
-    - analyzer 会给 slot 增加视觉从属关系：
-      group_id / group_order / parent_slot_id / usable_for
-    """
-
-    # ============================================================
-    # Public API
-    # ============================================================
-
     def analyze_reference(
         self,
         reference_path: Path,
@@ -204,8 +181,6 @@ class NativeTemplateFillService:
             if not isinstance(replacements, list):
                 replacements = []
 
-            # 严格模板填充：
-            # 先清空旧模板文字，再只写入 replacements 里的 slot。
             self._clear_all_text_shapes(slide_root)
 
             self._apply_replacements_to_slide(
@@ -444,10 +419,6 @@ class NativeTemplateFillService:
             int(summary.get("warn", 0)) > 0
             or int(summary.get("error", 0)) > 0
         )
-
-    # ============================================================
-    # Analyze helpers
-    # ============================================================
 
     def _parse_slide_refs(
         self,
@@ -700,7 +671,6 @@ class NativeTemplateFillService:
         if width <= 0 or height <= 0:
             return "decorative_candidate"
 
-        # 超大艺术字 / 背景字，例如大红字，不可作为填充 slot。
         if font_size and font_size >= 54:
             return "decorative_candidate"
 
@@ -710,11 +680,9 @@ class NativeTemplateFillService:
         if width >= slide_width * 0.55 and height >= slide_height * 0.16 and len(text) <= 50:
             return "decorative_candidate"
 
-        # 太小的点、页码、线条文字
         if width < 350000 or height < 90000:
             return "decorative_candidate"
 
-        # 显式命名优先
         if "title" in normalized_name or "标题" in normalized_name:
             return "title_candidate"
 
@@ -727,7 +695,6 @@ class NativeTemplateFillService:
         if "label" in normalized_name or "tag" in normalized_name or "标签" in normalized_name:
             return "label_candidate"
 
-        # 顶部大文本，多数是标题
         if y < slide_height * 0.25 and len(text) <= 120:
             if font_size and font_size >= 22:
                 return "title_candidate"
@@ -735,12 +702,10 @@ class NativeTemplateFillService:
             if width >= slide_width * 0.28 and height >= 180000:
                 return "title_candidate"
 
-        # 标题下方短句，多数是副标题
         if y < slide_height * 0.38 and len(text) <= 160:
             if width >= 1200000 and height >= 160000:
                 return "subtitle_candidate"
 
-        # 可承载正文的文本框
         if width >= 900000 and height >= 220000:
             if paragraph_count >= 2:
                 return "body_candidate"
@@ -751,11 +716,9 @@ class NativeTemplateFillService:
             if height >= 420000:
                 return "body_candidate"
 
-        # 小文本框保留为 label，用来承载关键词、卡片标题、节点名。
         if width >= 450000 and height >= 100000 and len(text) <= 60:
             return "label_candidate"
 
-        # 中等文本框也可能是正文
         if width >= 850000 and height >= 180000:
             return "body_candidate"
 
@@ -858,15 +821,7 @@ class NativeTemplateFillService:
         self,
         slots: list[dict]
     ) -> list[dict]:
-        """
-        给 slot 增加视觉从属关系。
 
-        逻辑：
-        - title 是页面主标题
-        - subtitle / label 可作为局部小标题
-        - body 会尝试归属到视觉上方、横向重叠最多的 subtitle / label
-        - 同一个 parent 下的 slot 归为同一个 group
-        """
         if not slots:
             return slots
 
@@ -946,7 +901,6 @@ class NativeTemplateFillService:
                 slot["parent_slot_id"] = None
                 slot["usable_for"] = []
 
-        # body 寻找视觉上的上级 header slot
         for body in body_slots:
             body_geo = body.get("geometry", {}) or {}
             body_y = body_geo.get("y", 0)
@@ -957,7 +911,6 @@ class NativeTemplateFillService:
                 header_geo = header.get("geometry", {}) or {}
                 header_y = header_geo.get("y", 0)
 
-                # parent 应在 body 上方
                 if header_y > body_y:
                     continue
 
@@ -1051,10 +1004,6 @@ class NativeTemplateFillService:
         row = int(y // 1200000)
 
         return f"g{row}_{col}"
-
-    # ============================================================
-    # Apply helpers
-    # ============================================================
 
     def _presentation_slide_size(
         self,
@@ -1167,10 +1116,6 @@ class NativeTemplateFillService:
         for extra_node in text_nodes[1:]:
             extra_node.text = ""
 
-    # ============================================================
-    # Presentation editing
-    # ============================================================
-
     def _clear_presentation_slide_list(
         self,
         presentation_root: ET.Element,
@@ -1281,10 +1226,6 @@ class NativeTemplateFillService:
         root = ET.Element(qn(REL_NS, "Relationships"))
 
         return self._xml_bytes(root)
-
-    # ============================================================
-    # Utilities
-    # ============================================================
 
     def _xml_bytes(self, root: ET.Element) -> bytes:
         return ET.tostring(
