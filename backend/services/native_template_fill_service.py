@@ -2,7 +2,6 @@ from pathlib import Path
 from copy import deepcopy
 import json
 import re
-import unicodedata
 import zipfile
 from xml.etree import ElementTree as ET
 
@@ -30,22 +29,27 @@ def qn(ns: str, tag: str) -> str:
 
 class NativeTemplateFillService:
     """
-    SlideBeautifier Native Template Fill Engine.
+    Strict native template-fill engine.
 
-    自己重写，不复制第三方包。
-
-    思路：
-    1. analyze_reference(): 把 reference.pptx 分析成 slide_library
-    2. AI 生成 fill_plan: source_slide + replacements(slot_id, text, role)
-    3. check_fill_plan(): 检查 slot、role、容量、文本长度
-    4. apply_fill_plan(): 克隆原 slide XML，替换原文本框内容
+    当前版本原则：
+    - 不做 AutoFit
+    - 不移动文本框
+    - 不改字号
+    - 不删除卡片 / 色块 / 图标
+    - 不新建 textbox
+    - 只复制参考 PPT 原生 slide
+    - 清空该 slide 的旧模板文字
+    - 根据 fill_plan 只替换指定 slot
 
     重点：
-    - 不新建 textbox
-    - 不靠坐标乱放
-    - 直接替换原 PowerPoint shape 里的文字
-    - 继承原字体、字号、颜色、位置、图层
+    - analyzer 会保留更多 slot，包括 label / subtitle / body
+    - analyzer 会给 slot 增加视觉从属关系：
+      group_id / group_order / parent_slot_id / usable_for
     """
+
+    # ============================================================
+    # Public API
+    # ============================================================
 
     def analyze_reference(
         self,
@@ -53,6 +57,9 @@ class NativeTemplateFillService:
         output_json_path: Path | None = None
     ) -> dict:
         reference_path = Path(reference_path)
+
+        if not reference_path.exists():
+            raise FileNotFoundError(f"Reference PPTX not found: {reference_path}")
 
         with zipfile.ZipFile(reference_path, "r") as zf:
             entries = {
@@ -64,6 +71,8 @@ class NativeTemplateFillService:
         presentation_root = ET.fromstring(entries["ppt/presentation.xml"])
         rels_root = ET.fromstring(entries["ppt/_rels/presentation.xml.rels"])
 
+        slide_width, slide_height = self._presentation_slide_size(presentation_root)
+
         slide_refs = self._parse_slide_refs(
             presentation_root=presentation_root,
             rels_root=rels_root
@@ -72,12 +81,13 @@ class NativeTemplateFillService:
         slides = []
 
         for slide_number, slide_part in slide_refs:
-            slide_xml = entries[slide_part]
-            slide_root = ET.fromstring(slide_xml)
+            slide_root = ET.fromstring(entries[slide_part])
 
             slots = self._analyze_slide_slots(
                 slide_root=slide_root,
-                slide_number=slide_number
+                slide_number=slide_number,
+                slide_width=slide_width,
+                slide_height=slide_height
             )
 
             slide_text = "\n".join(
@@ -103,8 +113,10 @@ class NativeTemplateFillService:
             )
 
         library = {
-            "schema": "slidebeautifier_native_template_library.v2",
+            "schema": "slidebeautifier_template_fill_library.slot_hierarchy.v1",
             "source_pptx": str(reference_path),
+            "slide_width": slide_width,
+            "slide_height": slide_height,
             "slide_count": len(slides),
             "slides": slides
         }
@@ -169,7 +181,10 @@ class NativeTemplateFillService:
             raise ValueError("fill_plan.slides must be a non-empty list")
 
         for output_index, plan_slide in enumerate(output_slides):
-            source_slide = self._safe_int(plan_slide.get("source_slide"), default=1)
+            source_slide = self._safe_int(
+                plan_slide.get("source_slide"),
+                default=1
+            )
 
             if source_slide not in source_slide_refs:
                 source_slide = 1
@@ -184,16 +199,14 @@ class NativeTemplateFillService:
 
             slide_root = ET.fromstring(entries[source_slide_part])
 
-            self._clear_replaceable_text(
-                slide_root=slide_root,
-                source_slide=source_slide,
-                slide_library=slide_library
-            )
-
             replacements = plan_slide.get("replacements", [])
 
             if not isinstance(replacements, list):
                 replacements = []
+
+            # 严格模板填充：
+            # 先清空旧模板文字，再只写入 replacements 里的 slot。
+            self._clear_all_text_shapes(slide_root)
 
             self._apply_replacements_to_slide(
                 slide_root=slide_root,
@@ -226,7 +239,13 @@ class NativeTemplateFillService:
         entries["[Content_Types].xml"] = self._xml_bytes(content_types_root)
 
         with zipfile.ZipFile(result_path, "w", compression=zipfile.ZIP_DEFLATED) as out:
+            written = set()
+
             for name, data in entries.items():
+                if name in written:
+                    continue
+
+                written.add(name)
                 out.writestr(name, data)
 
     def check_fill_plan(
@@ -245,7 +264,10 @@ class NativeTemplateFillService:
         }
 
         for output_index, plan_slide in enumerate(fill_plan.get("slides", []), start=1):
-            source_slide = self._safe_int(plan_slide.get("source_slide"), default=None)
+            source_slide = self._safe_int(
+                plan_slide.get("source_slide"),
+                default=None
+            )
 
             if source_slide is None:
                 errors.append(
@@ -328,6 +350,24 @@ class NativeTemplateFillService:
                     )
                     continue
 
+                slot_role = slot.get("role")
+
+                if slot_role in [
+                    "decorative_candidate",
+                    "noise_candidate",
+                    "unsafe_candidate"
+                ]:
+                    errors.append(
+                        {
+                            "output_slide": output_index,
+                            "source_slide": source_slide,
+                            "slot_id": slot_id,
+                            "slot_role": slot_role,
+                            "message": "replacement uses non-fillable slot"
+                        }
+                    )
+                    continue
+
                 if not text:
                     warnings.append(
                         {
@@ -339,23 +379,10 @@ class NativeTemplateFillService:
                     )
                     continue
 
-                slot_role = slot.get("role")
                 capacity = int(slot.get("capacity_chars", 80))
                 visual_width = self._visual_width(text)
 
-                if slot_role in ["decorative_candidate", "noise_candidate"]:
-                    errors.append(
-                        {
-                            "output_slide": output_index,
-                            "source_slide": source_slide,
-                            "slot_id": slot_id,
-                            "slot_role": slot_role,
-                            "message": "replacement uses decorative/noise slot"
-                        }
-                    )
-                    continue
-
-                if replacement_role == "title" and slot_role not in ["title_candidate", "body_candidate"]:
+                if slot_role == "label_candidate" and visual_width > max(16, capacity * 1.3):
                     warnings.append(
                         {
                             "output_slide": output_index,
@@ -363,11 +390,13 @@ class NativeTemplateFillService:
                             "slot_id": slot_id,
                             "slot_role": slot_role,
                             "replacement_role": replacement_role,
-                            "message": "title text is not placed in a title/body slot"
+                            "visual_width": visual_width,
+                            "capacity_chars": capacity,
+                            "message": "label slot text may be too long"
                         }
                     )
 
-                if replacement_role in ["body", "card", "step"] and slot_role == "label_candidate":
+                if replacement_role == "body" and slot_role == "label_candidate":
                     warnings.append(
                         {
                             "output_slide": output_index,
@@ -375,65 +404,23 @@ class NativeTemplateFillService:
                             "slot_id": slot_id,
                             "slot_role": slot_role,
                             "replacement_role": replacement_role,
-                            "message": "body/card text placed in label slot"
+                            "message": "body text placed into label slot"
                         }
                     )
 
-                if slot_role == "label_candidate" and visual_width > max(12, capacity * 0.8):
+                if slot_role == "body_candidate" and visual_width > capacity * 1.5:
                     warnings.append(
                         {
                             "output_slide": output_index,
                             "source_slide": source_slide,
                             "slot_id": slot_id,
                             "slot_role": slot_role,
+                            "replacement_role": replacement_role,
                             "visual_width": visual_width,
                             "capacity_chars": capacity,
-                            "message": "label slot text too long"
+                            "message": "text exceeds estimated body slot capacity"
                         }
                     )
-
-                if visual_width > capacity * 1.15:
-                    warnings.append(
-                        {
-                            "output_slide": output_index,
-                            "source_slide": source_slide,
-                            "slot_id": slot_id,
-                            "slot_role": slot_role,
-                            "visual_width": visual_width,
-                            "capacity_chars": capacity,
-                            "message": "text exceeds estimated slot capacity"
-                        }
-                    )
-
-                line_count = len([line for line in text.splitlines() if line.strip()])
-                original_paragraph_count = int(slot.get("paragraph_count", 1) or 1)
-
-                if line_count > max(original_paragraph_count + 2, 4):
-                    warnings.append(
-                        {
-                            "output_slide": output_index,
-                            "source_slide": source_slide,
-                            "slot_id": slot_id,
-                            "slot_role": slot_role,
-                            "line_count": line_count,
-                            "original_paragraph_count": original_paragraph_count,
-                            "message": "too many lines for original slot"
-                        }
-                    )
-
-            body_slots = [
-                slot for slot in library_slide.get("slots", [])
-                if slot.get("role") == "body_candidate"
-            ]
-
-            if len(replacements) >= 3 and len(body_slots) == 0:
-                warnings.append(
-                    {
-                        "output_slide": output_index,
-                        "source_slide": source_slide,
-                        "message": "selected template has many replacements but no body_candidate slots"
-                    }
-                )
 
         report = {
             "summary": {
@@ -452,7 +439,15 @@ class NativeTemplateFillService:
 
     def needs_repair(self, check_report: dict) -> bool:
         summary = check_report.get("summary", {})
-        return int(summary.get("warn", 0)) > 0 or int(summary.get("error", 0)) > 0
+
+        return (
+            int(summary.get("warn", 0)) > 0
+            or int(summary.get("error", 0)) > 0
+        )
+
+    # ============================================================
+    # Analyze helpers
+    # ============================================================
 
     def _parse_slide_refs(
         self,
@@ -502,7 +497,9 @@ class NativeTemplateFillService:
     def _analyze_slide_slots(
         self,
         slide_root: ET.Element,
-        slide_number: int
+        slide_number: int,
+        slide_width: int,
+        slide_height: int
     ) -> list[dict]:
         slots = []
 
@@ -526,33 +523,38 @@ class NativeTemplateFillService:
                 geometry=geometry,
                 font_size=font_size,
                 paragraph_count=paragraph_count,
-                is_vertical=is_vertical
+                is_vertical=is_vertical,
+                slide_width=slide_width,
+                slide_height=slide_height
             )
 
-            if role == "noise_candidate":
-                continue
+            slot = {
+                "slot_id": f"s{slide_number:02d}_sh{shape_id}",
+                "shape_id": shape_id,
+                "shape_name": shape_name,
+                "role": role,
+                "text": text,
+                "paragraph_count": paragraph_count,
+                "geometry": geometry,
+                "font_size_pt": font_size,
+                "capacity_chars": self._estimate_capacity(
+                    role=role,
+                    geometry=geometry,
+                    font_size=font_size,
+                    paragraph_count=paragraph_count
+                ),
+                "is_vertical": is_vertical,
+                "fillable": role in [
+                    "title_candidate",
+                    "subtitle_candidate",
+                    "body_candidate",
+                    "label_candidate"
+                ]
+            }
 
-            slots.append(
-                {
-                    "slot_id": f"s{slide_number:02d}_sh{shape_id}",
-                    "shape_id": shape_id,
-                    "shape_name": shape_name,
-                    "role": role,
-                    "text": text,
-                    "paragraph_count": paragraph_count,
-                    "geometry": geometry,
-                    "font_size_pt": font_size,
-                    "capacity_chars": self._estimate_capacity(
-                        role=role,
-                        geometry=geometry,
-                        font_size=font_size,
-                        paragraph_count=paragraph_count
-                    ),
-                    "is_vertical": is_vertical
-                }
-            )
+            slots.append(slot)
 
-        return slots
+        return self._classify_slot_hierarchy(slots)
 
     def _shape_identity(
         self,
@@ -674,7 +676,9 @@ class NativeTemplateFillService:
         geometry: dict,
         font_size: float | None,
         paragraph_count: int,
-        is_vertical: bool
+        is_vertical: bool,
+        slide_width: int,
+        slide_height: int
     ) -> str:
         normalized_name = shape_name.lower()
         normalized_text = text.strip().lower()
@@ -685,41 +689,77 @@ class NativeTemplateFillService:
         if is_vertical:
             return "decorative_candidate"
 
-        if "title" in normalized_name or "标题" in normalized_name:
-            return "title_candidate"
-
-        if "subtitle" in normalized_name or "副标题" in normalized_name:
-            return "subtitle_candidate"
-
         x = geometry.get("x", 0)
         y = geometry.get("y", 0)
         width = geometry.get("width", 0)
         height = geometry.get("height", 0)
 
         area = width * height
+        slide_area = slide_width * slide_height
 
-        if order == 1 and len(text) <= 100:
+        if width <= 0 or height <= 0:
+            return "decorative_candidate"
+
+        # 超大艺术字 / 背景字，例如大红字，不可作为填充 slot。
+        if font_size and font_size >= 54:
+            return "decorative_candidate"
+
+        if area >= slide_area * 0.18 and len(text) <= 50:
+            return "decorative_candidate"
+
+        if width >= slide_width * 0.55 and height >= slide_height * 0.16 and len(text) <= 50:
+            return "decorative_candidate"
+
+        # 太小的点、页码、线条文字
+        if width < 350000 or height < 90000:
+            return "decorative_candidate"
+
+        # 显式命名优先
+        if "title" in normalized_name or "标题" in normalized_name:
             return "title_candidate"
 
-        if font_size and font_size >= 26 and len(text) <= 120:
-            return "title_candidate"
-
-        if y < 1300000 and len(text) <= 120:
-            return "title_candidate"
-
-        if y < 2300000 and len(text) <= 140 and area < 2500000000000:
+        if "subtitle" in normalized_name or "副标题" in normalized_name:
             return "subtitle_candidate"
 
-        if paragraph_count >= 3 or len(text) >= 80:
+        if "body" in normalized_name or "content" in normalized_name or "正文" in normalized_name:
             return "body_candidate"
 
-        if width >= 2600000 and height >= 700000:
-            return "body_candidate"
-
-        if len(text) <= 40:
+        if "label" in normalized_name or "tag" in normalized_name or "标签" in normalized_name:
             return "label_candidate"
 
-        return "body_candidate"
+        # 顶部大文本，多数是标题
+        if y < slide_height * 0.25 and len(text) <= 120:
+            if font_size and font_size >= 22:
+                return "title_candidate"
+
+            if width >= slide_width * 0.28 and height >= 180000:
+                return "title_candidate"
+
+        # 标题下方短句，多数是副标题
+        if y < slide_height * 0.38 and len(text) <= 160:
+            if width >= 1200000 and height >= 160000:
+                return "subtitle_candidate"
+
+        # 可承载正文的文本框
+        if width >= 900000 and height >= 220000:
+            if paragraph_count >= 2:
+                return "body_candidate"
+
+            if len(text) >= 50:
+                return "body_candidate"
+
+            if height >= 420000:
+                return "body_candidate"
+
+        # 小文本框保留为 label，用来承载关键词、卡片标题、节点名。
+        if width >= 450000 and height >= 100000 and len(text) <= 60:
+            return "label_candidate"
+
+        # 中等文本框也可能是正文
+        if width >= 850000 and height >= 180000:
+            return "body_candidate"
+
+        return "decorative_candidate"
 
     def _is_noise_text(self, text: str) -> bool:
         if not text:
@@ -753,11 +793,13 @@ class NativeTemplateFillService:
                 font_size = 18
             elif role == "body_candidate":
                 font_size = 16
+            elif role == "label_candidate":
+                font_size = 14
             else:
                 font_size = 14
 
         if width <= 0 or height <= 0:
-            return 60
+            return 0
 
         line_height = font_size * 12700 * 1.25
         max_lines = max(1, int(height / max(line_height, 1)))
@@ -766,13 +808,15 @@ class NativeTemplateFillService:
         capacity = chars_per_line * max_lines
 
         if role == "title_candidate":
-            capacity = int(capacity * 0.70)
+            capacity = int(capacity * 0.65)
         elif role == "subtitle_candidate":
             capacity = int(capacity * 0.75)
         elif role == "label_candidate":
-            capacity = int(capacity * 0.50)
+            capacity = int(capacity * 0.55)
+        elif role != "body_candidate":
+            capacity = 0
 
-        return max(8, min(capacity, 300))
+        return max(0, min(capacity, 300))
 
     def _classify_page_type(
         self,
@@ -795,7 +839,12 @@ class NativeTemplateFillService:
         if any(word in normalized for word in ["thank", "thanks", "谢谢", "感谢"]):
             return "ending_candidate"
 
-        body_count = len([slot for slot in slots if slot.get("role") == "body_candidate"])
+        body_count = len(
+            [
+                slot for slot in slots
+                if slot.get("role") == "body_candidate"
+            ]
+        )
 
         if body_count >= 2:
             return "content_candidate"
@@ -805,32 +854,230 @@ class NativeTemplateFillService:
 
         return "content_candidate"
 
-    def _clear_replaceable_text(
+    def _classify_slot_hierarchy(
         self,
-        slide_root: ET.Element,
-        source_slide: int,
-        slide_library: dict
-    ) -> None:
-        slots_by_shape_id = {}
+        slots: list[dict]
+    ) -> list[dict]:
+        """
+        给 slot 增加视觉从属关系。
 
-        for slide in slide_library.get("slides", []):
-            if int(slide.get("slide_index", 0)) != source_slide:
-                continue
+        逻辑：
+        - title 是页面主标题
+        - subtitle / label 可作为局部小标题
+        - body 会尝试归属到视觉上方、横向重叠最多的 subtitle / label
+        - 同一个 parent 下的 slot 归为同一个 group
+        """
+        if not slots:
+            return slots
 
-            for slot in slide.get("slots", []):
-                shape_id = self._safe_int(slot.get("shape_id"), default=-1)
-                slots_by_shape_id[shape_id] = slot
+        title_slots = [
+            slot for slot in slots
+            if slot.get("role") == "title_candidate"
+        ]
 
-        for order, shape in enumerate(slide_root.findall(".//p:sp", NS), start=1):
-            shape_id, _shape_name = self._shape_identity(shape, order)
-            slot = slots_by_shape_id.get(shape_id)
+        main_title = None
 
-            if slot is None:
-                continue
+        if title_slots:
+            main_title = sorted(
+                title_slots,
+                key=lambda slot: (
+                    slot.get("geometry", {}).get("y", 0),
+                    slot.get("geometry", {}).get("x", 0)
+                )
+            )[0]
 
+        header_slots = [
+            slot for slot in slots
+            if slot.get("role") in [
+                "subtitle_candidate",
+                "label_candidate"
+            ]
+        ]
+
+        body_slots = [
+            slot for slot in slots
+            if slot.get("role") == "body_candidate"
+        ]
+
+        for slot in slots:
             role = slot.get("role")
 
-            if role in ["decorative_candidate", "noise_candidate"]:
+            if role == "title_candidate":
+                slot["slot_level"] = 0
+                slot["group_id"] = "title"
+                slot["parent_slot_id"] = None
+                slot["usable_for"] = ["title"]
+
+            elif role == "subtitle_candidate":
+                slot["slot_level"] = 1
+                slot["group_id"] = self._group_id_from_geometry(slot.get("geometry", {}))
+                slot["parent_slot_id"] = main_title.get("slot_id") if main_title else None
+                slot["usable_for"] = [
+                    "subtitle",
+                    "section_heading",
+                    "short_summary"
+                ]
+
+            elif role == "label_candidate":
+                slot["slot_level"] = 1
+                slot["group_id"] = self._group_id_from_geometry(slot.get("geometry", {}))
+                slot["parent_slot_id"] = main_title.get("slot_id") if main_title else None
+                slot["usable_for"] = [
+                    "label",
+                    "keyword",
+                    "number",
+                    "short_heading"
+                ]
+
+            elif role == "body_candidate":
+                slot["slot_level"] = 2
+                slot["group_id"] = self._group_id_from_geometry(slot.get("geometry", {}))
+                slot["parent_slot_id"] = main_title.get("slot_id") if main_title else None
+                slot["usable_for"] = [
+                    "body",
+                    "explanation",
+                    "example",
+                    "detail"
+                ]
+
+            else:
+                slot["slot_level"] = 9
+                slot["group_id"] = "decorative"
+                slot["parent_slot_id"] = None
+                slot["usable_for"] = []
+
+        # body 寻找视觉上的上级 header slot
+        for body in body_slots:
+            body_geo = body.get("geometry", {}) or {}
+            body_y = body_geo.get("y", 0)
+
+            candidates = []
+
+            for header in header_slots:
+                header_geo = header.get("geometry", {}) or {}
+                header_y = header_geo.get("y", 0)
+
+                # parent 应在 body 上方
+                if header_y > body_y:
+                    continue
+
+                x_overlap = self._x_overlap_ratio(
+                    a=header_geo,
+                    b=body_geo
+                )
+
+                if x_overlap <= 0:
+                    continue
+
+                vertical_distance = body_y - header_y
+                score = x_overlap * 1000000 - vertical_distance * 0.15
+
+                candidates.append(
+                    {
+                        "slot": header,
+                        "score": score
+                    }
+                )
+
+            if candidates:
+                best_parent = sorted(
+                    candidates,
+                    key=lambda item: item["score"],
+                    reverse=True
+                )[0]["slot"]
+
+                body["parent_slot_id"] = best_parent.get("slot_id")
+                body["group_id"] = best_parent.get("group_id")
+
+        groups = {}
+
+        for slot in slots:
+            group_id = slot.get("group_id")
+
+            if not group_id:
+                continue
+
+            groups.setdefault(group_id, []).append(slot)
+
+        for group_id, group_slots in groups.items():
+            sorted_group_slots = sorted(
+                group_slots,
+                key=lambda slot: (
+                    slot.get("geometry", {}).get("y", 0),
+                    slot.get("geometry", {}).get("x", 0)
+                )
+            )
+
+            for index, slot in enumerate(sorted_group_slots):
+                slot["group_order"] = index
+
+        return slots
+
+    def _x_overlap_ratio(
+        self,
+        a: dict,
+        b: dict
+    ) -> float:
+        ax1 = int(a.get("x", 0) or 0)
+        ax2 = ax1 + int(a.get("width", 0) or 0)
+
+        bx1 = int(b.get("x", 0) or 0)
+        bx2 = bx1 + int(b.get("width", 0) or 0)
+
+        if ax2 <= ax1 or bx2 <= bx1:
+            return 0.0
+
+        overlap = max(
+            0,
+            min(ax2, bx2) - max(ax1, bx1)
+        )
+
+        if overlap <= 0:
+            return 0.0
+
+        return overlap / max(
+            1,
+            min(ax2 - ax1, bx2 - bx1)
+        )
+
+    def _group_id_from_geometry(
+        self,
+        geometry: dict
+    ) -> str:
+        x = int(geometry.get("x", 0) or 0)
+        y = int(geometry.get("y", 0) or 0)
+
+        col = int(x // 2000000)
+        row = int(y // 1200000)
+
+        return f"g{row}_{col}"
+
+    # ============================================================
+    # Apply helpers
+    # ============================================================
+
+    def _presentation_slide_size(
+        self,
+        presentation_root: ET.Element
+    ) -> tuple[int, int]:
+        sld_sz = presentation_root.find("p:sldSz", NS)
+
+        if sld_sz is None:
+            return 12192000, 6858000
+
+        width = self._safe_int(sld_sz.attrib.get("cx"), 12192000)
+        height = self._safe_int(sld_sz.attrib.get("cy"), 6858000)
+
+        return width, height
+
+    def _clear_all_text_shapes(
+        self,
+        slide_root: ET.Element
+    ) -> None:
+        for shape in slide_root.findall(".//p:sp", NS):
+            tx_body = shape.find("p:txBody", NS)
+
+            if tx_body is None:
                 continue
 
             self._set_shape_text(shape, "")
@@ -855,7 +1102,10 @@ class NativeTemplateFillService:
             if not slot_id or slot_id not in shapes_by_slot_id:
                 continue
 
-            self._set_shape_text(shapes_by_slot_id[slot_id], text)
+            self._set_shape_text(
+                shape=shapes_by_slot_id[slot_id],
+                text=text
+            )
 
     def _set_shape_text(
         self,
@@ -916,6 +1166,10 @@ class NativeTemplateFillService:
 
         for extra_node in text_nodes[1:]:
             extra_node.text = ""
+
+    # ============================================================
+    # Presentation editing
+    # ============================================================
 
     def _clear_presentation_slide_list(
         self,
@@ -1020,11 +1274,17 @@ class NativeTemplateFillService:
 
     def _slide_rels_part(self, slide_part: str) -> str:
         path = Path(slide_part)
+
         return f"{path.parent}/_rels/{path.name}.rels".replace("\\", "/")
 
     def _empty_rels_xml(self) -> bytes:
         root = ET.Element(qn(REL_NS, "Relationships"))
+
         return self._xml_bytes(root)
+
+    # ============================================================
+    # Utilities
+    # ============================================================
 
     def _xml_bytes(self, root: ET.Element) -> bytes:
         return ET.tostring(
@@ -1033,7 +1293,11 @@ class NativeTemplateFillService:
             xml_declaration=True
         )
 
-    def _write_json(self, path: Path, data: dict) -> None:
+    def _write_json(
+        self,
+        path: Path,
+        data: dict
+    ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1049,12 +1313,12 @@ class NativeTemplateFillService:
         width = 0.0
 
         for char in "".join(text.split()):
-            east_asian_width = unicodedata.east_asian_width(char)
-
-            if east_asian_width in {"F", "W"}:
+            if "\u4e00" <= char <= "\u9fff":
                 width += 2.0
-            elif east_asian_width == "A":
-                width += 1.5
+            elif "\u3040" <= char <= "\u30ff":
+                width += 2.0
+            elif "\uac00" <= char <= "\ud7af":
+                width += 2.0
             else:
                 width += 1.0
 

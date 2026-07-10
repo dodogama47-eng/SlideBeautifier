@@ -34,7 +34,14 @@ import com.example.slidebeautifier.ui.components.GlassBackground
 import com.example.slidebeautifier.ui.components.GlassButton
 import com.example.slidebeautifier.ui.components.GlassCard
 import kotlinx.coroutines.launch
-
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 @Composable
 fun UploadScreen() {
     val context = LocalContext.current
@@ -49,6 +56,7 @@ fun UploadScreen() {
 
     var statusText by remember { mutableStateOf("Waiting for files") }
     var isGenerating by remember { mutableStateOf(false) }
+    var generationMode by remember { mutableStateOf("strict") }
 
     val originalFilePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -210,6 +218,13 @@ fun UploadScreen() {
                     lineHeight = 18.sp
                 )
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                GenerationModeSelector(
+                    selectedMode = generationMode,
+                    onModeSelected = { generationMode = it }
+                )
+
                 Spacer(modifier = Modifier.height(18.dp))
 
                 GlassButton(
@@ -227,7 +242,8 @@ fun UploadScreen() {
 
                                     val response = backendRepository.uploadFiles(
                                         formatUri = formatUri,
-                                        textUri = contentUri
+                                        textUri = contentUri,
+                                        generationMode = generationMode
                                     )
 
                                     val savedFileName = backendRepository.downloadResult(
@@ -323,7 +339,104 @@ fun FileUploadCard(
         )
     }
 }
+@Composable
+fun GenerationModeSelector(
+    selectedMode: String,
+    onModeSelected: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = "Generation Mode",
+            color = Color(0xFF202431),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
 
+        Spacer(modifier = Modifier.height(10.dp))
+
+        ModeCard(
+            title = "Content Preserving",
+            description = "Keep original wording and structure. Best for accurate or formal slides.",
+            selected = selectedMode == "strict",
+            onClick = { onModeSelected("strict") }
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        ModeCard(
+            title = "Design Optimized",
+            description = "Allow AI to shorten, combine, and rewrite text for a better visual layout.",
+            selected = selectedMode == "creative",
+            onClick = { onModeSelected("creative") }
+        )
+    }
+}
+
+
+@Composable
+fun ModeCard(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val borderColor =
+        if (selected) Color(0xFF175CD3)
+        else Color(0xFFD0D5DD)
+
+    val backgroundColor =
+        if (selected) Color(0xFFEFF8FF)
+        else Color.White.copy(alpha = 0.55f)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        border = BorderStroke(
+            width = if (selected) 2.dp else 1.dp,
+            color = borderColor
+        ),
+        colors = CardDefaults.cardColors(
+            containerColor = backgroundColor
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = title,
+                    color = Color(0xFF202431),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = description,
+                    color = Color(0xFF667085),
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            }
+        }
+    }
+}
 private fun getFileNameFromUri(
     context: Context,
     uri: Uri
