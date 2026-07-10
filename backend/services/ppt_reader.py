@@ -206,16 +206,6 @@ class PptReader:
         }
 
     def extract_reference_templates(self, pptx_path: Path) -> list[dict]:
-        """
-        提取 reference PPT 里的可填充区域。
-
-        重点：
-        - 不暴露 reference 原文
-        - 识别文本框位置
-        - 识别黑色/白色/浅色卡片、色块、内容容器
-        - 过滤页脚、线条、竖排装饰、小圆点
-        """
-
         prs = Presentation(str(pptx_path))
         templates = []
 
@@ -462,11 +452,9 @@ class PptReader:
         if y > 0.88 and area < 0.05:
             return False
 
-        # 有填充色或边框色的大矩形，更可能是文本容器
         if fill_color or line_color:
             return True
 
-        # 没有颜色但尺寸明显像内容卡片，也保留
         if area >= 0.04:
             return True
 
@@ -555,7 +543,6 @@ class PptReader:
             existing_area = float(existing.get("area", 0))
             slot_area = float(slot.get("area", 0))
 
-            # zone 通常代表整张卡片，比里面的小文本框更适合放新文案
             if slot.get("slot_kind") == "zone" and slot_area >= existing_area:
                 result[duplicate_index] = slot
 
