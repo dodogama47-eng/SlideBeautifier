@@ -414,7 +414,6 @@ class PptWriter:
                 result.append(block)
                 continue
 
-            # 如果模板有多个卡片/内容区，就把长 bullet 分散到多个 block
             max_groups = min(len(content_slots), len(bullets), 4)
             chunk_size = math.ceil(len(bullets) / max_groups)
 
@@ -484,7 +483,6 @@ class PptWriter:
         role = block.get("role", "body")
         target = block.get("target_slot_index")
 
-        # AI 指定的 slot 只在它没有被用过、没有重叠、且不是坏区域时才接受
         if target is not None:
             for slot in slots:
                 slot_index = slot.get("slot_index")
