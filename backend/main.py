@@ -15,6 +15,7 @@ from services.ppt_reader import PptReader
 from services.ai_design_planner import AIDesignPlanner
 from services.ppt_preview import PptPreviewService
 from services.native_template_fill_service import NativeTemplateFillService
+from services.ppt_autofit_service import PptAutoFitService
 
 
 app = FastAPI(title="SlideBeautifier Backend")
@@ -40,6 +41,7 @@ ppt_reader = PptReader()
 ai_design_planner = AIDesignPlanner()
 ppt_preview_service = PptPreviewService()
 template_fill_service = NativeTemplateFillService()
+ppt_autofit_service = PptAutoFitService()
 
 
 def get_task_result_dir(task_id: str) -> Path:
@@ -129,7 +131,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "connected",
-        "engine": "native_template_fill_repair_v4"
+        "engine": "native_template_fill_repair_autofit_v5"
     }
 
 
@@ -190,6 +192,7 @@ async def generate_presentation(
         repaired_fill_plan_path = analysis_dir / "fill_plan_repaired.json"
         check_report_path = analysis_dir / "check_report.json"
         repaired_check_report_path = analysis_dir / "check_report_repaired.json"
+        autofit_report_path = analysis_dir / "autofit_report.json"
 
         task = task_service.create_task(
             task_id=task_id,
@@ -299,6 +302,28 @@ async def generate_presentation(
                 status_code=500,
                 detail="Generated result PPTX is empty"
             )
+
+        print("Step 4.5: auto fitting result PPTX...")
+
+        try:
+            autofit_report = ppt_autofit_service.autofit_pptx(
+                pptx_path=result_path,
+                output_path=result_path
+            )
+
+            template_fill_service.save_fill_plan(
+                fill_plan=autofit_report,
+                output_json_path=autofit_report_path
+            )
+
+            task["autofit_report_path"] = str(autofit_report_path)
+
+            print(f"AutoFit status: {autofit_report.get('status')}")
+
+        except Exception:
+            print("AutoFit failed:")
+            traceback.print_exc()
+            task["autofit_error"] = "AutoFit failed."
 
         print("Step 5: generating preview images...")
 

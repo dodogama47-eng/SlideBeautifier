@@ -22,49 +22,53 @@ class AIDesignPlanner:
         content_slides: list[dict],
         slide_library: dict
     ) -> dict:
-        compact_content = self._compact_content_slides(content_slides)
+        content_inventory = self._build_content_inventory(content_slides)
         compact_library = self._compact_slide_library(slide_library)
 
         system_prompt = """
 You are a native PowerPoint template-fill planner.
 
-You receive:
-1. content_slides: the true content source.
-2. slide_library: reusable PowerPoint template slides.
+You do NOT rewrite text.
+You do NOT summarize text.
+You do NOT shorten text.
+You do NOT add ellipsis.
+You do NOT change meaning.
+You only arrange existing content into existing PowerPoint template slots.
 
-Your output is not a design drawing.
-Your output is a fill_plan that selects template slides and replaces existing text slots.
+The user provides:
+1. content_inventory:
+   - immutable text blocks extracted from content.pptx
+   - each block has content_id, role_hint, text
+   - text is the only source of truth
 
-Critical rules:
-- Do not invent facts.
-- Do not copy old template wording.
-- Do not create x/y coordinates.
-- Do not create new text boxes.
-- Use only existing slot_id values from the selected source_slide.
-- Preserve the same number and order of content slides.
-- Match content function to slot role.
-- title content should use title_candidate slots.
-- subtitle content should use subtitle_candidate if available.
-- body explanation should use body_candidate slots.
-- short labels should use label_candidate slots only for short phrases.
-- decorative_candidate slots must not be used.
-- Do not use ellipsis such as "..." or "…".
+2. slide_library:
+   - reusable PowerPoint template slides
+   - each slide has existing text slots with slot_id and role
+
+Your job:
+- Choose the best source_slide for each content page.
+- Assign existing content_ids to suitable slot_ids.
+- Preserve content order.
+- Preserve semantic relationships.
+- Keep subordinate / explanatory / sequential content together when appropriate.
+- Do not turn hierarchical or sequential content into unrelated parallel bullets.
 - Return ONLY valid JSON.
 """
 
         user_prompt = f"""
-CONTENT SLIDES:
+CONTENT INVENTORY.
+These text blocks are immutable. You must not rewrite them.
 
-{json.dumps(compact_content, ensure_ascii=False, indent=2)}
+{json.dumps(content_inventory, ensure_ascii=False, indent=2)}
 
-SLIDE LIBRARY:
+SLIDE LIBRARY.
 
 {json.dumps(compact_library, ensure_ascii=False, indent=2)}
 
 Return JSON with this exact structure:
 
 {{
-  "schema": "slidebeautifier_native_fill_plan.v2",
+  "schema": "slidebeautifier_native_fill_plan.v3",
   "status": "confirmed",
   "slides": [
     {{
@@ -76,43 +80,46 @@ Return JSON with this exact structure:
         "why_fit": "string",
         "risk": "string"
       }},
-      "replacements": [
+      "placements": [
         {{
           "slot_id": "s01_sh2",
           "role": "title | subtitle | body | label",
-          "text": "replacement text"
+          "content_ids": ["p0_title"]
         }}
       ]
     }}
   ]
 }}
 
-Planning rules:
-- page_index is 0-based index of content slide.
-- source_slide is 1-based slide_index from slide_library.
-- Each content slide must produce exactly one output slide.
-- You may reuse the same source_slide, but do NOT use the same source_slide repeatedly unless it is clearly the best fit.
-- Do not blindly follow template slide order.
-- Choose a source slide whose slot structure fits the content.
-- For each slide, compare all template pages and choose the best fit.
-- Same content type can use different source_slide templates.
-- Similar page types may still use different source_slide templates.
-- Match the number of content blocks to the number of usable body slots.
-- If content has only 1-2 body points, choose a simple template with fewer body slots.
-- If content has 3-5 body points, choose a template with multiple body/card slots.
-- Do not choose a template with many visible empty cards if there is not enough content to fill them.
-- Prefer layouts where title, subtitle, and body are visually separated.
-- Do not put subtitle and body into the same slot.
-- Use title_candidate for title.
-- Use subtitle_candidate for short secondary explanation.
-- Use body_candidate for paragraph/bullet explanation.
-- Use label_candidate only for short words or short phrases.
-- Avoid using label_candidate for body sentences.
-- Keep text shorter than capacity_chars.
-- For body text, use short complete lines separated by newlines.
-- Do not include page numbers like 1/11, 2/11.
-- Do not put long Chinese sentences into label_candidate slots.
-- Never output ellipsis such as "..." or "…".
+Hard rules:
+- Do NOT output replacement text directly.
+- Use content_ids only.
+- Each content_id may be used at most once per page.
+- Do not drop important content_ids.
+- Do not invent content_ids.
+- Do not change content text.
+- Do not split one content_id.
+- Do not combine unrelated content.
+- Preserve the order of content_ids as much as possible.
+- title content should use title_candidate slots.
+- subtitle content should use subtitle_candidate if available.
+- body/explanation content should use body_candidate slots.
+- label_candidate is only for very short independent labels.
+- Do not place long explanatory text into label_candidate.
+- decorative_candidate slots must not be used.
+- Choose a source_slide that has enough suitable slots for the content.
+- If content has few blocks, choose a simple template with fewer visible content areas.
+- If content has many blocks, choose a template with more body_candidate slots.
+- Similar content pages may use different source_slide templates.
+- Avoid using the same source_slide repeatedly unless it is clearly the best fit.
+
+Semantic rules:
+- If one line explains the previous line, keep them in the same slot.
+- If lines form a cause-effect chain, keep their order.
+- If lines are steps, keep them sequential.
+- If a bullet has sub-bullets, keep them together.
+- Do not flatten hierarchy into unrelated parallel cards.
+- Do not over-cut content into too many tiny fragments.
 """
 
         raw = self._chat_json(system_prompt, user_prompt)
@@ -131,40 +138,31 @@ Planning rules:
         fill_plan: dict,
         check_report: dict
     ) -> dict:
-        compact_content = self._compact_content_slides(content_slides)
+        content_inventory = self._build_content_inventory(content_slides)
         compact_library = self._compact_slide_library(slide_library)
 
         system_prompt = """
 You are a PowerPoint fill_plan repair engine.
 
-You receive:
-- content_slides
-- slide_library
-- current fill_plan
-- check_report with warnings/errors
+You do NOT rewrite text.
+You do NOT summarize text.
+You do NOT shorten text.
+You do NOT add ellipsis.
+You only repair source_slide and slot_id assignment.
 
 Your job:
-Return a corrected fill_plan.
-
-Repair rules:
-- Fix all errors.
-- Reduce all warnings as much as possible.
-- You may change source_slide.
-- You may change slot_id.
-- You may shorten text while preserving meaning.
-- You may split text across multiple body_candidate slots.
-- Do not use decorative_candidate slots.
-- Do not use label_candidate for long body content.
-- Use only slot_id values from the selected source_slide.
-- Do not invent new content.
-- Do not output ellipsis such as "..." or "…".
+- Fix slot errors.
+- Reduce layout warnings by choosing better template slides or slots.
+- Keep all original content unchanged.
+- Use content_ids only.
 - Return ONLY valid JSON.
 """
 
         user_prompt = f"""
-CONTENT SLIDES:
+CONTENT INVENTORY.
+Immutable source text:
 
-{json.dumps(compact_content, ensure_ascii=False, indent=2)}
+{json.dumps(content_inventory, ensure_ascii=False, indent=2)}
 
 SLIDE LIBRARY:
 
@@ -181,7 +179,7 @@ CHECK REPORT:
 Return corrected JSON with this exact structure:
 
 {{
-  "schema": "slidebeautifier_native_fill_plan.v2",
+  "schema": "slidebeautifier_native_fill_plan.v3",
   "status": "confirmed",
   "slides": [
     {{
@@ -193,28 +191,28 @@ Return corrected JSON with this exact structure:
         "why_fit": "string",
         "risk": "string"
       }},
-      "replacements": [
+      "placements": [
         {{
           "slot_id": "s01_sh2",
           "role": "title | subtitle | body | label",
-          "text": "replacement text"
+          "content_ids": ["p0_title"]
         }}
       ]
     }}
   ]
 }}
 
-Repair strategy:
-- If text exceeds capacity, shorten it as a complete sentence.
-- If slot role is wrong, choose a better slot.
-- If selected source_slide has poor slots, choose a different source_slide.
-- If title/body are overlapping visually, use another template page with more body_candidate slots.
-- If the selected template leaves many visible empty cards, choose a simpler source_slide.
-- If many slides use the same source_slide, diversify template choice while keeping layout fit.
-- If text is too long, rewrite it as a shorter complete sentence, not with ellipsis.
-- Do not use "..." or "…".
-- If a slide has only a few points, do not use a three-card template.
-- Preserve all important factual points from content_slides.
+Repair rules:
+- Do not output replacement text directly.
+- Do not alter source text.
+- Do not remove important content.
+- If text is too long for a slot, choose a larger slot or a different source_slide.
+- If one slide has too many content blocks, choose a template with more body slots.
+- If content is semantically connected, keep it together.
+- If a template has too many unused visible cards, choose a simpler template.
+- Do not use decorative_candidate slots.
+- Do not place body content into label_candidate.
+- Preserve page order.
 """
 
         raw = self._chat_json(system_prompt, user_prompt)
@@ -233,17 +231,17 @@ Repair strategy:
     ) -> dict:
         slides = []
 
-        for index, content_slide in enumerate(content_slides):
+        for page_index, content_slide in enumerate(content_slides):
             slides.append(
                 self._fallback_plan_slide(
-                    page_index=index,
+                    page_index=page_index,
                     content_slide=content_slide,
                     slide_library=slide_library
                 )
             )
 
         return {
-            "schema": "slidebeautifier_native_fill_plan.v2",
+            "schema": "slidebeautifier_native_fill_plan.v3",
             "status": "confirmed",
             "slides": slides
         }
@@ -265,7 +263,7 @@ Repair strategy:
                     "content": user_prompt
                 }
             ],
-            temperature=0.12,
+            temperature=0.05,
             response_format={
                 "type": "json_object"
             }
@@ -300,6 +298,7 @@ Repair strategy:
         if not isinstance(plan, dict):
             raise ValueError("fill_plan must be a JSON object")
 
+        inventory_by_page = self._content_inventory_by_page(content_slides)
         ai_slides = plan.get("slides", [])
 
         if not isinstance(ai_slides, list):
@@ -338,12 +337,13 @@ Repair strategy:
                     page_index=page_index,
                     ai_slide=ai_slide,
                     content_slide=content_slide,
-                    slide_library=slide_library
+                    slide_library=slide_library,
+                    page_inventory=inventory_by_page.get(page_index, {})
                 )
             )
 
         return {
-            "schema": "slidebeautifier_native_fill_plan.v2",
+            "schema": "slidebeautifier_native_fill_plan.v3",
             "status": "confirmed",
             "slides": normalized_slides
         }
@@ -353,7 +353,8 @@ Repair strategy:
         page_index: int,
         ai_slide: dict,
         content_slide: dict,
-        slide_library: dict
+        slide_library: dict,
+        page_inventory: dict[str, dict]
     ) -> dict:
         library_slides = self._library_slides_by_index(slide_library)
 
@@ -374,32 +375,49 @@ Repair strategy:
             source_slide=source_slide
         )
 
-        valid_slot_ids = set(valid_slots.keys())
-        raw_replacements = ai_slide.get("replacements", [])
+        placements = ai_slide.get("placements")
 
-        if not isinstance(raw_replacements, list):
-            raw_replacements = []
+        # 兼容旧格式 replacements，但不信任 AI 的 text，只信 content_ids
+        if placements is None:
+            placements = ai_slide.get("replacements", [])
 
-        replacements = []
+        if not isinstance(placements, list):
+            placements = []
+
         used_slot_ids = set()
+        used_content_ids = set()
+        normalized_replacements = []
 
-        for replacement in raw_replacements:
-            if not isinstance(replacement, dict):
+        for placement in placements:
+            if not isinstance(placement, dict):
                 continue
 
-            slot_id = str(replacement.get("slot_id", "")).strip()
-            role = str(replacement.get("role", "")).strip().lower()
-            text = str(replacement.get("text", "")).strip()
+            slot_id = str(placement.get("slot_id", "")).strip()
+            role = str(placement.get("role", "")).strip().lower()
 
             if role not in ["title", "subtitle", "body", "label"]:
                 role = self._infer_replacement_role(
                     slot=valid_slots.get(slot_id)
                 )
 
-            if not slot_id or not text:
+            content_ids = placement.get("content_ids", [])
+
+            if isinstance(content_ids, str):
+                content_ids = [content_ids]
+
+            if not isinstance(content_ids, list):
+                content_ids = []
+
+            content_ids = [
+                str(content_id).strip()
+                for content_id in content_ids
+                if str(content_id).strip()
+            ]
+
+            if not slot_id:
                 continue
 
-            if slot_id not in valid_slot_ids:
+            if slot_id not in valid_slots:
                 continue
 
             if slot_id in used_slot_ids:
@@ -410,17 +428,58 @@ Repair strategy:
             if slot and slot.get("role") == "decorative_candidate":
                 continue
 
+            valid_content_ids = []
+
+            for content_id in content_ids:
+                if content_id not in page_inventory:
+                    continue
+
+                if content_id in used_content_ids:
+                    continue
+
+                valid_content_ids.append(content_id)
+                used_content_ids.add(content_id)
+
+            if not valid_content_ids:
+                continue
+
+            text = self._materialize_content_text(
+                content_ids=valid_content_ids,
+                page_inventory=page_inventory
+            )
+
+            if not text:
+                continue
+
             used_slot_ids.add(slot_id)
 
-            replacements.append(
+            normalized_replacements.append(
                 {
                     "slot_id": slot_id,
                     "role": role,
+                    "content_ids": valid_content_ids,
                     "text": text
                 }
             )
 
-        if not replacements:
+        # 如果 AI 漏掉了内容，尝试把未使用内容追加进已有 body slot 或 fallback
+        missing_content_ids = [
+            content_id
+            for content_id, block in page_inventory.items()
+            if content_id not in used_content_ids
+            and block.get("required", True)
+        ]
+
+        if missing_content_ids:
+            normalized_replacements = self._append_missing_content(
+                replacements=normalized_replacements,
+                missing_content_ids=missing_content_ids,
+                page_inventory=page_inventory,
+                valid_slots=valid_slots,
+                used_slot_ids=used_slot_ids
+            )
+
+        if not normalized_replacements:
             fallback = self._fallback_plan_slide(
                 page_index=page_index,
                 content_slide=content_slide,
@@ -428,7 +487,7 @@ Repair strategy:
                 forced_source_slide=source_slide
             )
 
-            replacements = fallback.get("replacements", [])
+            normalized_replacements = fallback.get("replacements", [])
 
         layout_rationale = ai_slide.get("layout_rationale", {})
 
@@ -444,8 +503,74 @@ Repair strategy:
                 "why_fit": str(layout_rationale.get("why_fit", "")).strip(),
                 "risk": str(layout_rationale.get("risk", "")).strip()
             },
-            "replacements": replacements
+            "replacements": normalized_replacements
         }
+
+    def _append_missing_content(
+        self,
+        replacements: list[dict],
+        missing_content_ids: list[str],
+        page_inventory: dict[str, dict],
+        valid_slots: dict[str, dict],
+        used_slot_ids: set[str]
+    ) -> list[dict]:
+        body_slots = [
+            slot
+            for slot in valid_slots.values()
+            if slot.get("role") == "body_candidate"
+            and slot.get("slot_id") not in used_slot_ids
+        ]
+
+        title_slots = [
+            slot
+            for slot in valid_slots.values()
+            if slot.get("role") == "title_candidate"
+            and slot.get("slot_id") not in used_slot_ids
+        ]
+
+        candidate_slots = body_slots or title_slots
+
+        if candidate_slots:
+            slot = candidate_slots[0]
+            slot_id = slot["slot_id"]
+
+            replacements.append(
+                {
+                    "slot_id": slot_id,
+                    "role": "body",
+                    "content_ids": missing_content_ids,
+                    "text": self._materialize_content_text(
+                        content_ids=missing_content_ids,
+                        page_inventory=page_inventory
+                    )
+                }
+            )
+
+            return replacements
+
+        # 没有空 slot，就追加到最后一个 body replacement，保证内容不丢
+        if replacements:
+            target_index = len(replacements) - 1
+
+            for index, replacement in enumerate(replacements):
+                if replacement.get("role") == "body":
+                    target_index = index
+                    break
+
+            old_text = replacements[target_index].get("text", "")
+            added_text = self._materialize_content_text(
+                content_ids=missing_content_ids,
+                page_inventory=page_inventory
+            )
+
+            replacements[target_index]["text"] = "\n".join(
+                part for part in [old_text, added_text] if part
+            )
+
+            old_ids = replacements[target_index].get("content_ids", [])
+            replacements[target_index]["content_ids"] = old_ids + missing_content_ids
+
+        return replacements
 
     def _fallback_plan_slide(
         self,
@@ -467,6 +592,14 @@ Repair strategy:
 
         if library_slide is None:
             raise ValueError("slide_library has no valid slides")
+
+        page_inventory = self._content_inventory_by_page([content_slide]).get(0)
+
+        # 如果这是从原列表里的 page_index 进入，重新生成正确 id
+        page_inventory = self._build_page_inventory(
+            page_index=page_index,
+            content_slide=content_slide
+        )
 
         slots = library_slide.get("slots", [])
 
@@ -490,49 +623,50 @@ Repair strategy:
             if slot.get("role") == "label_candidate"
         ]
 
-        title = str(content_slide.get("title", f"Slide {page_index + 1}")).strip()
-        bullets = content_slide.get("bullets", [])
+        replacements = []
+        used_content_ids = set()
 
-        if not isinstance(bullets, list):
-            bullets = []
+        title_block = page_inventory.get(f"p{page_index}_title")
 
-        bullets = [
-            str(item).strip()
-            for item in bullets
-            if item and str(item).strip()
+        if title_block and title_slots:
+            content_id = title_block["content_id"]
+            used_content_ids.add(content_id)
+
+            replacements.append(
+                {
+                    "slot_id": title_slots[0]["slot_id"],
+                    "role": "title",
+                    "content_ids": [content_id],
+                    "text": title_block["text"]
+                }
+            )
+
+        body_blocks = [
+            block
+            for content_id, block in page_inventory.items()
+            if content_id not in used_content_ids
+            and block.get("required", True)
         ]
 
-        replacements = []
-
-        if title and title_slots:
-            slot = title_slots[0]
+        # 如果第一个 body 更像副标题，且模板有 subtitle slot，就放进去，但原文不改
+        if body_blocks and subtitle_slots:
+            first_block = body_blocks[0]
             replacements.append(
                 {
-                    "slot_id": slot["slot_id"],
-                    "role": "title",
-                    "text": self._shorten(title, slot.get("capacity_chars", 50))
-                }
-            )
-
-        body_lines = bullets
-
-        if body_lines and subtitle_slots:
-            slot = subtitle_slots[0]
-            first_line = body_lines[0]
-            replacements.append(
-                {
-                    "slot_id": slot["slot_id"],
+                    "slot_id": subtitle_slots[0]["slot_id"],
                     "role": "subtitle",
-                    "text": self._shorten(first_line, slot.get("capacity_chars", 40))
+                    "content_ids": [first_block["content_id"]],
+                    "text": first_block["text"]
                 }
             )
-            body_lines = body_lines[1:]
+            used_content_ids.add(first_block["content_id"])
+            body_blocks = body_blocks[1:]
 
         available_body_slots = body_slots or label_slots
 
-        if body_lines and available_body_slots:
-            groups = self._split_lines_for_slots(
-                lines=body_lines,
+        if body_blocks and available_body_slots:
+            groups = self._group_blocks_for_slots(
+                blocks=body_blocks,
                 slot_count=len(available_body_slots)
             )
 
@@ -540,28 +674,49 @@ Repair strategy:
                 if not group:
                     continue
 
-                capacity = slot.get("capacity_chars", 80)
                 role = "body" if slot.get("role") == "body_candidate" else "label"
+                content_ids = [block["content_id"] for block in group]
 
                 replacements.append(
                     {
                         "slot_id": slot["slot_id"],
                         "role": role,
-                        "text": "\n".join(
-                            self._shorten(line, max(12, capacity // max(1, len(group))))
-                            for line in group
-                        )
+                        "content_ids": content_ids,
+                        "text": "\n".join(block["text"] for block in group)
                     }
                 )
+
+                for content_id in content_ids:
+                    used_content_ids.add(content_id)
+
+        missing_ids = [
+            content_id
+            for content_id, block in page_inventory.items()
+            if content_id not in used_content_ids
+            and block.get("required", True)
+        ]
+
+        if missing_ids:
+            replacements = self._append_missing_content(
+                replacements=replacements,
+                missing_content_ids=missing_ids,
+                page_inventory=page_inventory,
+                valid_slots={
+                    slot["slot_id"]: slot
+                    for slot in slots
+                    if slot.get("slot_id")
+                },
+                used_slot_ids=set(r["slot_id"] for r in replacements)
+            )
 
         return {
             "page_index": page_index,
             "source_slide": source_slide,
             "purpose": "content",
             "layout_rationale": {
-                "layout_pattern": "fallback native slot fill",
+                "layout_pattern": "fallback immutable native slot fill",
                 "why_fit": "Selected a source slide with available title/body slots.",
-                "risk": "Fallback may be less accurate than AI plan."
+                "risk": "Fallback preserves all text but may be less visually optimized."
             },
             "replacements": replacements
         }
@@ -605,7 +760,7 @@ Repair strategy:
             if title_count:
                 score += 4
 
-            score += body_count * 8
+            score += body_count * 9
             score += subtitle_count * 2
             score += label_count
 
@@ -633,7 +788,7 @@ Repair strategy:
             if is_summary and body_count <= 2:
                 score += 8
 
-            score -= abs(source_slide - ((page_index % max(1, len(slides))) + 1)) * 0.3
+            score -= abs(source_slide - ((page_index % max(1, len(slides))) + 1)) * 0.25
 
             scored.append(
                 {
@@ -657,56 +812,155 @@ Repair strategy:
 
         return selected["source_slide"]
 
-    def _slide_fill_score(
-        self,
-        slide: dict,
-        bullet_count: int = 0
-    ) -> int:
-        score = 0
-        body_count = 0
+    def _build_content_inventory(self, content_slides: list[dict]) -> dict:
+        pages = []
 
-        for slot in slide.get("slots", []):
-            role = slot.get("role")
+        for page_index, slide in enumerate(content_slides):
+            page_inventory = self._build_page_inventory(
+                page_index=page_index,
+                content_slide=slide
+            )
 
-            if role == "title_candidate":
-                score += 4
-            elif role == "subtitle_candidate":
-                score += 2
-            elif role == "body_candidate":
-                score += 7
-                body_count += 1
-            elif role == "label_candidate":
-                score += 1
-
-        if bullet_count >= 3 and body_count >= 2:
-            score += 8
-
-        if bullet_count >= 5 and body_count >= 3:
-            score += 10
-
-        return score
-
-    def _compact_content_slides(self, slides: list[dict]) -> list[dict]:
-        compact = []
-
-        for slide in slides:
-            bullets = slide.get("bullets", [])
-
-            if not isinstance(bullets, list):
-                bullets = []
-
-            compact.append(
+            pages.append(
                 {
-                    "page_index": slide.get("page_index"),
-                    "title": slide.get("title", ""),
-                    "bullets": bullets[:12],
-                    "raw_text": str(slide.get("raw_text", ""))[:2200],
-                    "image_count": slide.get("image_count", 0),
-                    "table_count": slide.get("table_count", 0)
+                    "page_index": page_index,
+                    "blocks": list(page_inventory.values())
                 }
             )
 
-        return compact
+        return {
+            "schema": "slidebeautifier_content_inventory.v1",
+            "rules": {
+                "immutable_text": True,
+                "no_rewrite": True,
+                "no_summarize": True,
+                "preserve_order": True
+            },
+            "pages": pages
+        }
+
+    def _content_inventory_by_page(
+        self,
+        content_slides: list[dict]
+    ) -> dict[int, dict[str, dict]]:
+        result = {}
+
+        for page_index, slide in enumerate(content_slides):
+            result[page_index] = self._build_page_inventory(
+                page_index=page_index,
+                content_slide=slide
+            )
+
+        return result
+
+    def _build_page_inventory(
+        self,
+        page_index: int,
+        content_slide: dict
+    ) -> dict[str, dict]:
+        result = {}
+
+        title = str(content_slide.get("title", "")).strip()
+
+        if title:
+            content_id = f"p{page_index}_title"
+
+            result[content_id] = {
+                "content_id": content_id,
+                "role_hint": "title",
+                "order": 0,
+                "text": title,
+                "required": True
+            }
+
+        bullets = content_slide.get("bullets", [])
+
+        if not isinstance(bullets, list):
+            bullets = []
+
+        order = 1
+
+        for bullet_index, bullet in enumerate(bullets, start=1):
+            text = str(bullet).strip()
+
+            if not text:
+                continue
+
+            content_id = f"p{page_index}_b{bullet_index}"
+
+            result[content_id] = {
+                "content_id": content_id,
+                "role_hint": self._guess_content_role(text),
+                "order": order,
+                "text": text,
+                "required": True
+            }
+
+            order += 1
+
+        return result
+
+    def _guess_content_role(self, text: str) -> str:
+        clean = text.strip()
+
+        if len(clean) <= 18 and not clean.endswith(("。", ".", "，", ",")):
+            return "label_or_subtitle"
+
+        if any(marker in clean for marker in ["首先", "其次", "最后", "第一", "第二", "第三"]):
+            return "sequence"
+
+        if any(marker in clean for marker in ["因为", "所以", "导致", "因此", "由于"]):
+            return "cause_effect"
+
+        return "body"
+
+    def _materialize_content_text(
+        self,
+        content_ids: list[str],
+        page_inventory: dict[str, dict]
+    ) -> str:
+        blocks = []
+
+        for content_id in content_ids:
+            block = page_inventory.get(content_id)
+
+            if not block:
+                continue
+
+            text = str(block.get("text", "")).strip()
+
+            if text:
+                blocks.append(
+                    {
+                        "order": block.get("order", 0),
+                        "text": text
+                    }
+                )
+
+        blocks = sorted(blocks, key=lambda item: item["order"])
+
+        return "\n".join(block["text"] for block in blocks)
+
+    def _group_blocks_for_slots(
+        self,
+        blocks: list[dict],
+        slot_count: int
+    ) -> list[list[dict]]:
+        if slot_count <= 0:
+            return []
+
+        if not blocks:
+            return [[] for _ in range(slot_count)]
+
+        slot_count = min(slot_count, len(blocks))
+        chunk_size = math.ceil(len(blocks) / slot_count)
+
+        groups = []
+
+        for index in range(0, len(blocks), chunk_size):
+            groups.append(blocks[index:index + chunk_size])
+
+        return groups
 
     def _compact_slide_library(self, slide_library: dict) -> dict:
         compact_slides = []
@@ -797,52 +1051,3 @@ Repair strategy:
             return "label"
 
         return "body"
-
-    def _split_lines_for_slots(
-        self,
-        lines: list[str],
-        slot_count: int
-    ) -> list[list[str]]:
-        if slot_count <= 0:
-            return []
-
-        if not lines:
-            return [[] for _ in range(slot_count)]
-
-        slot_count = min(slot_count, len(lines))
-        chunk_size = math.ceil(len(lines) / slot_count)
-
-        groups = []
-
-        for index in range(0, len(lines), chunk_size):
-            groups.append(lines[index:index + chunk_size])
-
-        return groups
-
-    def _shorten(
-        self,
-        text: str,
-        max_chars: int
-    ) -> str:
-        text = str(text).strip()
-
-        if len(text) <= max_chars:
-            return text
-
-        cut_points = ["。", "，", "；", ";", ",", "."]
-        safe_limit = max(12, max_chars)
-
-        candidate = text[:safe_limit]
-
-        best_cut = -1
-
-        for mark in cut_points:
-            pos = candidate.rfind(mark)
-
-            if pos > best_cut:
-                best_cut = pos
-
-        if best_cut >= 8:
-            return candidate[:best_cut + 1].strip()
-
-        return candidate.strip()
